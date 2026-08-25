@@ -1,0 +1,97 @@
+# Model governance gate — runs as a stage AFTER training/build and BEFORE the
+# deployment stage. It does not run on every PR; it's the pre-deployment
+# checkpoint before a model gets promoted to a registry/prod endpoint.
+#
+# Exit codes from `bdp-model-gate`:
+#   0 -> PASS          -> DeployModel stage proceeds automatically
+#   2 -> NEEDS_REVIEW  -> pipeline stops here; a human approves the manual
+#                         validation step before DeployModel runs
+#   1 -> BLOCKED        -> pipeline fails outright, DeployModel never runs
+#
+# Assumes an upstream "TrainModel" stage has already published these as a
+# pipeline artifact named "model-candidate":
+#   model.joblib, validation.csv, protected.csv, model_card.json
+
+trigger: none  # this pipeline is invoked from the training pipeline, not on push
+
+stages:
+  - stage: ModelGovernanceGate
+    displayName: "Model Governance Gate"
+    jobs:
+      - job: RunGate
+        displayName: "Run BDP Model Gate pre-deployment checks"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - download: current
+            artifact: model-candidate
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+
+          - script: |
+              pip install "bdp-model-gate[structured]"
+            displayName: "Install BDP Model Gate"
+
+          - script: |
+              bdp-model-gate \
+                --model "$(Pipeline.Workspace)/model-candidate/model.joblib" \
+                --data "$(Pipeline.Workspace)/model-candidate/validation.csv" \
+                --target-col label \
+                --protected "$(Pipeline.Workspace)/model-candidate/protected.csv" \
+                --model-card "$(Pipeline.Workspace)/model-candidate/model_card.json" \
+                --cost-per-inference 0.0008 \
+                --output "$(Build.ArtifactStagingDirectory)/gate_report.json"
+            displayName: "Run governance gate"
+            name: runGate
+            continueOnError: true   # capture the exit code ourselves below instead of hard-failing here
+
+          - script: |
+              EXIT_CODE=$(runGate.exitCode)
+              echo "Gate exit code: $EXIT_CODE"
+              if [ "$EXIT_CODE" = "1" ]; then
+                echo "##vso[task.logissue type=error]Model BLOCKED by governance gate."
+                echo "##vso[task.complete result=Failed;]"
+              elif [ "$EXIT_CODE" = "2" ]; then
+                echo "##vso[task.logissue type=warning]Model NEEDS_REVIEW — manual approval required before deployment."
+                echo "##vso[task.setvariable variable=needsManualReview;isOutput=true]true"
+              fi
+            name: interpretResult
+            displayName: "Interpret gate result"
+
+          - publish: "$(Build.ArtifactStagingDirectory)/gate_report.json"
+            artifact: gate-report
+            displayName: "Publish gate report"
+
+  - stage: ManualApproval
+    displayName: "Manual Approval (if NEEDS_REVIEW)"
+    dependsOn: ModelGovernanceGate
+    condition: eq(dependencies.ModelGovernanceGate.outputs['RunGate.interpretResult.needsManualReview'], 'true')
+    jobs:
+      - deployment: ApproveModel
+        displayName: "Compliance/product sign-off"
+        environment: "model-governance-approval"   # configure required approvers on this environment
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: echo "Approved — proceeding to deployment."
+
+  - stage: DeployModel
+    displayName: "Deploy Model"
+    dependsOn:
+      - ModelGovernanceGate
+      - ManualApproval
+    condition: |
+      and(
+        succeeded('ModelGovernanceGate'),
+        in(dependencies.ManualApproval.result, 'Succeeded', 'Skipped')
+      )
+    jobs:
+      - job: Deploy
+        displayName: "Promote model to registry / endpoint"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - script: echo "Deploying model — replace with your Azure ML / AKS deployment step."

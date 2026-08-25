@@ -1,0 +1,88 @@
+# CI for the bdp-model-gate library itself: lint, type-check, and test.
+#
+# This is NOT the pre-deployment model gate — see ci_examples/ for the
+# workflows that consumers of this library run against their own models.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,structured]"
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Mypy
+        run: mypy bdp_model_gate
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches requires-python (>=3.9) and the shap<0.47 ceiling, which
+        # has no wheels beyond 3.12. Raise both together when shap does.
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,structured,yaml,toml]"
+      - name: Pytest
+        run: pytest -q
+
+  test-core-only:
+    # The base install has no scikit-learn/fairlearn/shap. Those checks must
+    # degrade to NOT_APPLICABLE rather than crash, and metric="auto" must
+    # fall back and say so — this job is what proves that stays true.
+    name: Test (core install only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install without the structured extra
+        run: pip install -e ".[dev,yaml,toml]"
+      - name: Pytest
+        run: pytest -q --no-cov
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build backend
+        run: pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

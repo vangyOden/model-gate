@@ -1,0 +1,30 @@
+# Build artifacts — never commit these; `python -m build` regenerates them.
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Environments
+.venv/
+venv/
+env/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Gate output
+gate_report.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

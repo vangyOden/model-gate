@@ -1,0 +1,104 @@
+# BDP Model Gate — pre-deployment governance check.
+#
+# This is a REUSABLE workflow, not triggered on every push/PR. Your training
+# workflow calls it once a candidate model artifact exists, before any
+# deployment job runs.
+#
+# Exit codes from `bdp-model-gate`:
+#   0 -> PASS          -> deploy job runs automatically
+#   2 -> NEEDS_REVIEW  -> deploy waits on a GitHub Environment's required reviewers
+#   1 -> BLOCKED        -> workflow fails, deploy never runs
+#
+# Assumes an upstream job/workflow has already uploaded a "model-candidate"
+# artifact containing: model.joblib, validation.csv, protected.csv, model_card.json
+
+name: BDP Model Gate
+
+on:
+  workflow_call:
+    inputs:
+      cost_per_inference:
+        type: number
+        default: 0.0008
+  workflow_dispatch:
+    inputs:
+      cost_per_inference:
+        type: number
+        default: 0.0008
+
+jobs:
+  governance-gate:
+    name: Run BDP Model Gate
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.gate.outputs.status }}
+    steps:
+      - name: Download model candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: model-candidate
+          path: model-candidate
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install BDP Model Gate
+        run: pip install "bdp-model-gate[structured]"
+
+      - name: Run governance gate
+        id: gate
+        run: |
+          set +e
+          bdp-model-gate \
+            --model model-candidate/model.joblib \
+            --data model-candidate/validation.csv \
+            --target-col label \
+            --protected model-candidate/protected.csv \
+            --model-card model-candidate/model_card.json \
+            --cost-per-inference "${{ inputs.cost_per_inference }}" \
+            --output gate_report.json
+          code=$?
+          set -e
+
+          if [ "$code" -eq 0 ]; then status=PASS
+          elif [ "$code" -eq 2 ]; then status=NEEDS_REVIEW
+          else status=BLOCKED
+          fi
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "Gate status: $status (exit code $code)"
+
+      - name: Upload gate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: gate_report.json
+
+      - name: Fail workflow if BLOCKED
+        if: steps.gate.outputs.status == 'BLOCKED'
+        run: |
+          echo "::error::Model BLOCKED by governance gate — see gate-report artifact."
+          exit 1
+
+  manual-approval:
+    name: Compliance/product sign-off
+    needs: governance-gate
+    if: needs.governance-gate.outputs.status == 'NEEDS_REVIEW'
+    runs-on: ubuntu-latest
+    environment: model-governance-approval  # configure required reviewers on this environment in repo settings
+    steps:
+      - run: echo "Approved by required reviewers — proceeding to deployment."
+
+  deploy-model:
+    name: Deploy model
+    needs: [governance-gate, manual-approval]
+    if: |
+      always() &&
+      needs.governance-gate.result == 'success' &&
+      (needs.manual-approval.result == 'success' || needs.manual-approval.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploying model — replace with your Azure ML / AKS deployment step."

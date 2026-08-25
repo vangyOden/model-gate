@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdp-model-gate"
+version = "0.1.0"
+description = "Automated pre-deployment ML model governance gate: fairness, performance, compliance, and security checks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Vangelis Oden" }]
+keywords = ["ml", "governance", "fairness", "compliance", "mlops", "responsible-ai"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.23,<3.0",
+    "pandas>=1.5,<3.0",
+    "joblib>=1.2,<2.0",
+]
+
+[project.scripts]
+bdp-model-gate = "bdp_model_gate.cli:main"
+
+[project.optional-dependencies]
+structured = [
+    "scikit-learn>=1.2,<2.0",
+    "fairlearn>=0.9,<0.13",
+    "shap>=0.44,<0.47",
+]
+yaml = [
+    "pyyaml>=6.0,<7.0",
+]
+toml = [
+    "tomli>=2.0,<3.0; python_version < '3.11'",
+]
+dev = [
+    "pytest>=7.0,<9.0",
+    "pytest-cov>=4.1,<6.0",
+    "build>=1.0,<2.0",
+    "mypy>=1.8,<2.0",
+    "ruff>=0.4,<1.0",
+    "pandas-stubs",
+    "pyyaml>=6.0,<7.0",
+    "types-PyYAML>=6.0,<7.0",
+]
+
+[project.urls]
+Homepage = "https://kerahealth.example.com/bdp-model-gate"
+Changelog = "https://kerahealth.example.com/bdp-model-gate/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["bdp_model_gate*"]
+
+[tool.setuptools.package-data]
+bdp_model_gate = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=bdp_model_gate --cov-report=term-missing --cov-fail-under=85"
+testpaths = ["tests"]
+filterwarnings = [
+    # upstream joblib internals reacting to a numpy 2.5 deprecation — not
+    # actionable from this codebase, tracked upstream in joblib
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning:joblib",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["bdp_model_gate"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # line length handled by formatter, not worth failing CI over
+
+[tool.mypy]
+# Pinned to 3.12, not requires-python's 3.9: numpy's bundled stubs use PEP 695
+# `type` statements, which mypy rejects below 3.12. 3.9 compatibility is
+# guarded instead by ruff (target-version = py39) and the 3.9 CI test job.
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false   # tighten to true once the whole codebase has full annotations
+check_untyped_defs = true
+ignore_missing_imports = true   # shap/fairlearn/joblib ship no/partial type stubs
