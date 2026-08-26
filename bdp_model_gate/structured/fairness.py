@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .._logging import get_logger
+from .._sampling import stable_sample
 from ..classes import favourable_mask, resolve_favourable
 from ..config import FairnessConfig
 from ..core.base import BaseCheck, CheckResult
@@ -201,7 +202,16 @@ class DisparateImpactCheck(BaseCheck):
 class ShapSubgroupCheck(BaseCheck):
     """For each feature, checks whether its SHAP contribution differs
     meaningfully across protected-attribute groups — catches features that
-    look fair on average but drive outcomes differently for a subgroup."""
+    look fair on average but drive outcomes differently for a subgroup.
+
+    The gap is measured **relative to the mean absolute SHAP contribution**,
+    not in the raw units of the model output. SHAP values inherit the target's
+    scale, so an absolute threshold that is sensible for a probability
+    (contributions around 0.5) flags every feature on a premium model whose
+    contributions run to thousands of naira. Relative, one threshold works
+    on both: a value of 0.5 means "this feature's cross-group gap is worth
+    half of a typical contribution".
+    """
 
     name = "shap_subgroup_gap"
     category = "fairness"
@@ -356,23 +366,46 @@ class ShapSubgroupCheck(BaseCheck):
             ]
         shap_df = pd.DataFrame(values, columns=context.X.columns)
 
+        # Scale gaps by the typical contribution magnitude, so the threshold
+        # is dimensionless and survives a change of target units.
+        shap_scale = float(np.mean(np.abs(values)))
+        if shap_scale <= 0:
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    "NOT_APPLICABLE",
+                    "every SHAP contribution is zero — the model does not use its "
+                    "features, so there are no subgroup gaps to compare",
+                    self.blocking,
+                )
+            ]
+
         results = []
         for attr in context.protected_df.columns:
             for feature in context.X.columns:
                 group_means = shap_df[feature].groupby(context.protected_df[attr].values).mean()
-                gap = group_means.max() - group_means.min()
-                if abs(gap) > self.config.shap_gap_threshold:
+                gap = float(group_means.max() - group_means.min())
+                relative_gap = abs(gap) / shap_scale
+                if relative_gap > self.config.shap_gap_threshold:
                     results.append(
                         CheckResult(
                             self.name,
                             self.category,
                             "SUBGROUP_IMPACT_RISK",
-                            detail=f"{feature} SHAP contribution gap across {attr}={gap:.3f}",
+                            detail=(
+                                f"{feature} SHAP contribution gap across {attr}="
+                                f"{gap:,.3f} — {relative_gap:.0%} of the mean absolute "
+                                f"contribution {shap_scale:,.3f}"
+                            ),
                             blocking=self.blocking,
                             metadata={
                                 "feature": feature,
                                 "protected_attr": attr,
-                                "shap_gap": round(float(gap), 3),
+                                "shap_gap": round(gap, 4),
+                                "relative_gap": round(relative_gap, 4),
+                                "shap_scale": round(shap_scale, 4),
+                                "threshold": self.config.shap_gap_threshold,
                             },
                         )
                     )
@@ -464,7 +497,7 @@ class CounterfactualFlipCheck(BaseCheck):
         for attr in context.protected_df.columns:
             if attr not in X.columns:
                 continue  # attribute excluded from model inputs — nothing to flip
-            sample = X.sample(min(self.n_samples, len(X)), random_state=42).copy()
+            sample = stable_sample(X, self.n_samples, 42)
             base_preds = self._favourable_proba(adapter, sample, context)
             for val in context.protected_df[attr].unique():
                 flipped = sample.copy()

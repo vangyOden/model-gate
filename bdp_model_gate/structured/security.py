@@ -7,6 +7,7 @@ import re
 import numpy as np
 
 from .._logging import get_logger
+from .._sampling import stable_sample
 from ..classes import to_ranks
 from ..config import SecurityConfig
 from ..core.base import BaseCheck, CheckResult
@@ -99,7 +100,8 @@ class AdversarialRobustnessCheck(BaseCheck):
 
         task = resolve_task(context)
         adapter = ModelAdapter.from_context(context)
-        sample = X.sample(min(self.n_samples, len(X)), random_state=self.random_state).copy()
+        # Content-addressed, so the verdict does not depend on row order.
+        sample = stable_sample(X, self.n_samples, self.random_state)
         base_preds = adapter.predict(sample)
 
         # Preference order for the attack direction, strongest first:

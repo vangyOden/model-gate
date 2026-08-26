@@ -35,7 +35,7 @@ report = ModelGate(checks=default_structured_checks(config)).run(context)
 | `disparity_threshold` | `0.10` | demographic parity |
 | `decision_threshold` | `0.5` | binarising for parity |
 | `proxy_corr_threshold` | `0.30` | η² for proxy correlation |
-| `shap_gap_threshold` | `0.15` | **absolute, in target units** — see below |
+| `shap_gap_threshold` | `0.50` | relative to the mean absolute SHAP contribution |
 | `counterfactual_shift_threshold` | `0.05` | |
 | `mean_gap_threshold` | `0.10` | regression, relative |
 | `error_parity_threshold` | `0.20` | regression, relative |
@@ -43,10 +43,15 @@ report = ModelGate(checks=default_structured_checks(config)).run(context)
 | `loss_ratio_threshold` | `0.10` | regression, relative |
 | `min_group_size` | `30` | groups below this are reported, not scored |
 
-!!! warning "`shap_gap_threshold` is absolute"
-    Unlike the four regression thresholds, it is in the units of the model
-    output. On a naira target the default flags nearly every feature. Scale it
-    to your target: `0.05 * float(np.mean(y_pred))`.
+!!! note "All gap thresholds are relative"
+    Each is a fraction of the corresponding overall figure — the overall mean,
+    the overall error, or the mean absolute SHAP contribution. That is what
+    lets one default work for a premium in naira, a claim count and a
+    probability alike.
+
+    `shap_gap_threshold = 0.50` means "flag a feature whose cross-group gap is
+    worth half a typical contribution". Before 0.4.2 it was absolute and in
+    target units, which flagged nearly every feature on a money target.
 
 ## Compliance
 

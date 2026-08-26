@@ -69,6 +69,31 @@ jobs:
       - name: Pytest
         run: pytest -q --no-cov
 
+  mutation:
+    # Non-blocking for now: it reports how many mutants the suite kills, which
+    # is the only real answer to "would my tests have noticed?". Once the score
+    # is known and stable, turn it into a floor.
+    name: Mutation testing (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,structured]"
+      - name: Run mutation testing
+        # Time-boxed: a full run is long, and a partial score is still useful.
+        run: timeout 20m mutmut run --max-children 4 || true
+      - name: Report
+        run: |
+          echo "### Mutation testing" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          mutmut results >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build distribution
     runs-on: ubuntu-latest

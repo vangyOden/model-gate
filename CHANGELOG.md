@@ -6,6 +6,75 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-26
+
+Robustness of the checks themselves. Six silent failures have shipped and been
+fixed, and every one passed the test suite at the time — so this release
+attacks that pattern rather than adding more of the same tests. Two more bugs
+surfaced while building it.
+
+### Added
+- **Suite-wide `CHECK_ERROR` guard** (`tests/conftest.py`). An autouse fixture
+  wraps `ModelGate.run` and fails any test whose report contains a
+  `CHECK_ERROR` it did not declare via `@pytest.mark.expect_check_error`. This
+  alone would have caught the `ShapSubgroupCheck` crash on
+  `RandomForestClassifier`: the test that missed it asserted
+  `len(results) > 0`, which passes, because an exception becomes a blocking
+  *result* rather than propagating.
+- **`tests/test_known_answers.py`** — 17 tests on inputs whose correct answer
+  is derivable by hand: parity difference exactly `1.0` and `0.0`, η² exactly
+  `1.0` for a feature that is a pure function of the attribute, hand-computed
+  loss ratios, group MAEs, calibration signs, and metric values. If you know
+  the answer, wrong cannot hide.
+- **`tests/test_invariants.py`** — 15 metamorphic tests asserting properties
+  that must hold for *any* input: row-permutation invariance, group and class
+  relabelling, feature-scale invariance, `y`-scaling behaviour (`rmse`/`mae`
+  scale by *k*, `r2` and `mape` do not), and monotonicity — making a model
+  strictly more unfair must never lower the measured disparity.
+- **`tests/test_model_matrix.py`** — 22 tests crossing six classifier
+  families, four regressor families and a `predict_fn` closure with all three
+  tasks, asserting every flag lands in a known set. The shap 3-D bug was
+  reachable only through a family the fixtures never used.
+- **`tests/test_properties.py`** — 14 `hypothesis` tests over the numeric
+  core: error metrics non-negative and symmetric, `rmse >= mae`, `r2 <= 1`,
+  ordinal bounds, and every binary probability shape reducing to one column.
+- **`tests/test_not_applicable.py`** — 21 tests asserting the *reason* on
+  every skip path. Those branches are where a check silently does nothing, so
+  a check skipping for the wrong reason passes every other test.
+- **Hostile fixtures** — features spanning seven orders of magnitude, a
+  three-row protected group, and a 99.5/0.5 class split.
+- **Mutation testing**, configured under `[tool.mutmut]` and running as an
+  advisory CI job. It is the only technique that answers "would my tests have
+  noticed?", which is the question this release exists to answer. Advisory
+  first; a kill-rate floor once the score is known.
+
+### Fixed
+- **`FairnessConfig.shap_gap_threshold` was absolute**, in the units of the
+  model output, while the four regression fairness thresholds were relative.
+  SHAP values inherit the target's scale, so a threshold sensible for a
+  probability flagged essentially every feature on a premium model — 12 of 17
+  fairness findings in the regression example. It is now measured **relative
+  to the mean absolute contribution**, and the default moves from `0.15` to
+  `0.50`, meaning "this feature's cross-group gap is worth half a typical
+  contribution". Calibrated against both a probability-scale and a
+  naira-scale model, where the real proxy sits at 1.4–2.2 and noise below
+  0.03. The result metadata gains `relative_gap` and `shap_scale`.
+- **Subsampling depended on row order.** `AdversarialRobustnessCheck` and
+  `CounterfactualFlipCheck` used `DataFrame.sample(random_state=...)`, which
+  is reproducible for a fixed frame but selects by **position** — so the same
+  data in a different order produced a different subsample and could produce a
+  different verdict. Sorting a CSV should not decide whether a model ships.
+  New `bdp_model_gate._sampling.stable_sample` selects by row **content**, so
+  permuting the input cannot change which rows are scored. Found by the
+  permutation-invariance test, not by inspection.
+
+### Changed
+- Project homepage now points at <https://vanjy-eng.github.io/model-gate/>,
+  with the documentation as a separate `Documentation` URL. Takes effect on
+  this upload; 0.4.1 was published with the old value.
+- `hypothesis` and `mutmut` added to the `dev` extra.
+
+
 ## [0.4.1] - 2026-08-26
 
 Example notebooks — and one real bug that writing them exposed.
@@ -451,7 +520,8 @@ in 0.4.0; example notebooks in 0.4.1.
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/vanjy-eng/model-gate/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/vanjy-eng/model-gate/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.2

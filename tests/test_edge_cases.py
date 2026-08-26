@@ -61,6 +61,7 @@ def test_all_categorical_features_skip_proxy_and_robustness_checks(synthetic_dat
     assert all(r.flag == "NOT_APPLICABLE" for r in robustness)
 
 
+@pytest.mark.expect_check_error
 def test_check_exception_is_isolated_and_reported(small_valid_context):
     class ExplodingCheck(BaseCheck):
         name = "exploding_check"

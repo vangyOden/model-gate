@@ -3,7 +3,7 @@
 Planned work, with enough detail that decisions already taken do not get
 re-argued. Shipped releases are in [`CHANGELOG.md`](CHANGELOG.md).
 
-Current release: **0.4.1**.
+Current release: **0.4.2**.
 
 ---
 
@@ -64,67 +64,22 @@ work rather than decided here.
 
 ---
 
-## 0.4.2 — Robustness of the checks themselves
+## 0.4.2 — Robustness of the checks themselves ✅
 
-Five silent failures have shipped and been fixed so far. Every one passed the
-test suite at the time, and for a tool whose job is catching problems that is
-the pattern worth attacking directly. Each had a specific structural cause,
-and that mapping is the plan:
+**Shipped.** See [`CHANGELOG.md`](CHANGELOG.md) for detail. The suite went from
+167 to 256 tests across five new files: known-answer, metamorphic invariant,
+model-family matrix, property-based, and skip-reason coverage — plus an autouse
+`CHECK_ERROR` guard and advisory mutation testing.
 
-| Bug that shipped | Why tests missed it | Guard to build |
-|---|---|---|
-| `DisparateImpactCheck` returned `0.000` for a maximally unfair model | no test knew the *correct answer* | known-answer tests |
-| `ShapSubgroupCheck` crashed on `RandomForestClassifier` | one model family in fixtures; `assert len(results) > 0` passed on a `CHECK_ERROR` | model-family matrix + global `CHECK_ERROR` guard |
-| CLI sliced `predict_proba[:, 1]` on multiclass | CLI tested only for binary | cross-task CLI matrix |
-| adversarial perturbation scaled off the largest column | all fixture features had similar magnitude | scale-invariance test + heterogeneous fixture |
-| gradient attack was weaker than random noise | no test compared the two | already added in 0.4.1 — keep as the template |
+Two more bugs surfaced while building it, both found by the new tests rather
+than by inspection: `shap_gap_threshold` was absolute where it needed to be
+relative, and subsampling selected rows by position, so sorting a CSV could
+change a verdict.
 
-### Activities, in value order
+Still open from the original plan:
 
-1. **Autouse `CHECK_ERROR` guard** in `conftest.py`. Any test whose report
-   contains a `CHECK_ERROR` fails unless it opts in via a marker. A
-   `CHECK_ERROR` is *always* either a bug or an explicit expectation. This
-   one fixture would have caught the SHAP crash outright.
-2. **Known-answer suite** — one per check, with hand-derived values: parity
-   difference exactly `1.0`/`0.0`, η² exactly `1.0` for a feature that is a
-   pure function of the attribute, hand-computed `ordinal_mae`,
-   `quadratic_kappa` and loss-ratio figures, flip rate exactly `0` for a
-   constant model. If you know the answer, wrong cannot hide.
-3. **Metamorphic invariants** — properties that must hold for *any* input,
-   which no example test covers:
-   - row-permutation invariance
-   - class-relabelling invariance for ordinal metrics
-   - **feature-scale invariance** (would have caught the perturbation bug)
-   - `y`-scaling: `rmse`/`mae` scale by *k*, `r2` unchanged
-   - group-relabelling invariance
-   - monotonicity — making a model strictly more unfair must never lower the
-     disparity figure
-4. **Model-family × task matrix** — one parametrized suite over
-   `LogisticRegression`, `RandomForest`, `GradientBoosting`,
-   `SVC(probability=True)`, a `Pipeline` and a `predict_fn` closure, crossed
-   with binary / multiclass / regression. Assert every flag lands in a known
-   set.
-5. **Mutation testing** — `mutmut` over `bdp_model_gate/`, reported as a
-   non-blocking CI job first, then a kill-rate floor. The only technique that
-   actually answers *"would my tests have noticed?"*, which is the question
-   this whole release exists to answer.
-6. **Property-based layer** — `hypothesis` on the metric functions and
-   `ModelAdapter` shape handling (bounds, direction, symmetry).
-7. **`NOT_APPLICABLE` reason coverage** — every skip path asserted on its
-   reason string. Those paths are where a check silently does nothing, which
-   is the failure mode that hides best.
-8. **Hostile fixtures** — single-row groups, constant features, 99.9/0.1
-   imbalance, zero-variance target, all-NaN optional inputs.
-
-### Also in 0.4.2
-
-- **Make `FairnessConfig.shap_gap_threshold` relative.** It is currently
-  absolute and expressed in the units of the model output, unlike the four
-  regression fairness thresholds. On a premium model predicting naira in the
-  tens of thousands the default `0.15` flags essentially every feature — 12
-  of 17 fairness findings in the regression example before it was rescaled by
-  hand. A check that flags everything is as useless as one that flags
-  nothing. Notebook `03` documents the workaround meanwhile.
+- **A mutation kill-rate floor.** The CI job is advisory until the score is
+  known and stable; turning it into a threshold is the follow-up.
 
 ---
 

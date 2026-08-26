@@ -102,18 +102,15 @@ Regression measures the mean **relative** prediction shift instead, against
 relative to its own magnitude, so a sum-insured column in the millions does
 not swamp a single-digit risk score.
 
-!!! warning "Rescale `shap_gap_threshold` for regression"
-    `FairnessConfig.shap_gap_threshold` is **absolute and in the units of the
-    model output**, unlike the four thresholds above. On a model predicting
-    naira in the tens of thousands the default of `0.15` flags essentially
-    every feature.
+!!! note "`shap_gap_threshold` needs no rescaling"
+    Since 0.4.2 it is relative to the mean absolute SHAP contribution, so the
+    same default works whether contributions are probabilities or naira. On a
+    premium model the planted geographic proxy scores around 1.4 while genuine
+    noise sits below 0.03, against a default of `0.50`.
 
-    ```python
-    config.fairness.shap_gap_threshold = 0.05 * float(np.mean(y_pred))
-    ```
-
-    Making it relative is planned; see the
-    [roadmap](https://github.com/vanjy-eng/model-gate/blob/main/ROADMAP.md).
+    Before 0.4.2 it was absolute and in target units, which flagged nearly
+    every feature on a money target. If you pinned a hand-scaled value, remove
+    it.
 
 Worked end to end in
 [notebook 03](../examples/03_regression_sklearn.ipynb).
