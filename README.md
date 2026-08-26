@@ -320,10 +320,10 @@ no `structured` extra — that job is what keeps the graceful-degradation
 paths (`NOT_APPLICABLE` results, metric fallback) honest. Tests that need
 a real estimator `importorskip` on scikit-learn rather than failing there.
 
-The 3.12 ceiling tracks the `shap<0.47` pin, which has no wheels beyond
-3.12; raise both together. Note `[tool.mypy] python_version` is pinned to
-3.12 for numpy's stubs, so 3.9 compatibility is enforced by ruff's
-`target-version` and the 3.9 test job rather than by the type checker.
+The matrix covers the whole `requires-python` range. Note
+`[tool.mypy] python_version` is pinned to 3.12 for numpy's stubs, so 3.9
+compatibility is enforced by ruff's `target-version` and the 3.9 test job
+rather than by the type checker.
 
 This is all separate from `ci_examples/`, which are pre-deployment gates
 for models *built by* consumers of this library, not for the library's own

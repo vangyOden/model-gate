@@ -10,7 +10,15 @@ from .metrics import AUTO, MetricSetting
 
 @dataclass
 class FairnessConfig:
+    """Thresholds for the fairness checks.
+
+    `decision_threshold` turns continuous predictions into class labels for
+    `DisparateImpactCheck`, which measures selection *rates* and so needs
+    hard classes. Predictions already in {0, 1} are used as-is.
+    """
+
     disparity_threshold: float = 0.10  # max demographic parity difference
+    decision_threshold: float = 0.5  # cutoff for binarising y_pred before parity
     proxy_corr_threshold: float = 0.30  # eta^2 above this = proxy risk
     shap_gap_threshold: float = 0.15  # max cross-group SHAP contribution gap
     counterfactual_shift_threshold: float = 0.05  # max prediction shift on attribute flip

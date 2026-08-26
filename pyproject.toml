@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdp-model-gate"
-version = "0.2.0"
+version = "0.2.1"
 description = "Automated pre-deployment ML model governance gate: fairness, performance, compliance, and security checks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,7 +32,11 @@ bdp-model-gate = "bdp_model_gate.cli:main"
 structured = [
     "scikit-learn>=1.2,<2.0",
     "fairlearn>=0.9,<0.13",
-    "shap>=0.44,<0.47",
+    # Floor is 0.48, not 0.44: shap < 0.47 breaks on import against numpy >= 2
+    # ("Converting `np.floating` to a dtype not allowed"), which the numpy
+    # range below permits, and it ships no cp313 wheels. Ceiling is 0.50,
+    # which raised its own floor to Python 3.11 — above our requires-python.
+    "shap>=0.48,<0.50",
 ]
 yaml = [
     "pyyaml>=6.0,<7.0",
@@ -83,6 +87,18 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]  # line length handled by formatter, not worth failing CI over
+
+[tool.ruff.format]
+# Notebooks keep their hand-tuned layout: the formatter explodes compact
+# keyword lists one-per-line, which reads worse in a walkthrough. They are
+# still linted by `ruff check`.
+exclude = ["examples/*.ipynb"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tutorial notebooks introduce each import beside the code that uses it, which
+# teaches better than a wall of imports in cell 1. Real defects (F, B, UP) are
+# still enforced there.
+"examples/*.ipynb" = ["E402", "I001"]
 
 [tool.mypy]
 # Pinned to 3.12, not requires-python's 3.9: numpy's bundled stubs use PEP 695

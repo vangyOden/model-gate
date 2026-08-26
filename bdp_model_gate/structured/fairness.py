@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from .._logging import get_logger
 from ..config import FairnessConfig
 from ..core.base import BaseCheck, CheckResult
+from ..metrics import to_hard_labels
+
+logger = get_logger("fairness")
 
 
 class ProxyCorrelationCheck(BaseCheck):
@@ -75,7 +79,16 @@ class ProxyCorrelationCheck(BaseCheck):
 
 
 class DisparateImpactCheck(BaseCheck):
-    """Outcome-level disparity check per protected attribute (demographic parity)."""
+    """Outcome-level disparity check per protected attribute (demographic parity).
+
+    Demographic parity compares *selection rates* — the share of each group
+    predicted positive — so it needs hard class labels. Continuous
+    predictions are binarised at `config.decision_threshold` before being
+    handed to fairlearn; predictions already in {0, 1} pass through
+    untouched. Without that step a probability `y_pred` yields a selection
+    rate of 0 in every group and a parity difference of exactly 0.0, which
+    reads as "perfectly fair" no matter how skewed the model is.
+    """
 
     name = "disparate_impact"
     category = "fairness"
@@ -108,11 +121,18 @@ class DisparateImpactCheck(BaseCheck):
                 )
             ]
 
+        y_pred = to_hard_labels(context.y_pred, self.config.decision_threshold)
+        if not np.array_equal(np.asarray(context.y_pred), y_pred):
+            logger.debug(
+                "binarised continuous y_pred at decision_threshold=%s for demographic parity",
+                self.config.decision_threshold,
+            )
+
         results = []
         for attr in context.protected_df.columns:
             dpd = demographic_parity_difference(
                 context.y_true,
-                context.y_pred,
+                y_pred,
                 sensitive_features=context.protected_df[attr],
             )
             flag = "DISPARITY_RISK" if abs(dpd) > self.config.disparity_threshold else "OK"
@@ -123,7 +143,11 @@ class DisparateImpactCheck(BaseCheck):
                     flag,
                     detail=f"{attr}: demographic parity diff={dpd:.3f}",
                     blocking=self.blocking,
-                    metadata={"protected_attr": attr, "demographic_parity_diff": round(dpd, 3)},
+                    metadata={
+                        "protected_attr": attr,
+                        "demographic_parity_diff": round(dpd, 3),
+                        "decision_threshold": self.config.decision_threshold,
+                    },
                 )
             )
         return results
@@ -162,6 +186,24 @@ class ShapSubgroupCheck(BaseCheck):
                 pass  # fall through to generic explainer if TreeExplainer can't handle this model
         return shap_module.Explainer(model, X)
 
+    @staticmethod
+    def _positive_class_values(values):
+        """Normalises SHAP output to one contribution per (row, feature).
+
+        shap returns a 2-D array for regressors and for some binary
+        classifiers, but a 3-D (rows, features, classes) array for others —
+        `RandomForestClassifier` among them, and which shape you get changed
+        across shap versions. Reduce the binary case to the positive class;
+        return None for genuine multiclass, which the caller reports as
+        NOT_APPLICABLE rather than guessing at a class.
+        """
+        arr = np.asarray(values)
+        if arr.ndim == 2:
+            return arr
+        if arr.ndim == 3 and arr.shape[-1] == 2:
+            return arr[:, :, 1]
+        return None
+
     def run(self, context) -> list[CheckResult]:
         if context.protected_df is None or context.protected_df.empty:
             return [
@@ -189,7 +231,21 @@ class ShapSubgroupCheck(BaseCheck):
 
         explainer = self._build_explainer(shap, context.model, context.X)
         shap_values = explainer(context.X)
-        shap_df = pd.DataFrame(shap_values.values, columns=context.X.columns)
+        values = self._positive_class_values(shap_values.values)
+        if values is None:
+            n_classes = np.asarray(shap_values.values).shape[-1]
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    "NOT_APPLICABLE",
+                    f"multiclass SHAP output ({n_classes} classes) — this check compares "
+                    "contributions for a single positive class and has no meaningful "
+                    "reduction across more than two",
+                    self.blocking,
+                )
+            ]
+        shap_df = pd.DataFrame(values, columns=context.X.columns)
 
         results = []
         for attr in context.protected_df.columns:

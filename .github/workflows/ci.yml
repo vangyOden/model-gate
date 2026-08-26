@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
       - name: Install
         run: pip install -e ".[dev,structured]"
@@ -38,9 +38,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Matches requires-python (>=3.9) and the shap<0.47 ceiling, which
-        # has no wheels beyond 3.12. Raise both together when shap does.
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # Full requires-python range. shap >= 0.48 ships cp313 wheels and
+        # imports cleanly against numpy 2.x, so 3.13 is covered too.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
       - name: Install without the structured extra
         run: pip install -e ".[dev,yaml,toml]"
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
       - name: Install build backend
         run: pip install build

@@ -6,6 +6,54 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-26
+
+### Fixed
+- **`DisparateImpactCheck` silently reported `OK` for probability
+  predictions.** Demographic parity compares selection rates, counting
+  predictions equal to `1`. A probability is never exactly `1`, so every
+  group's selection rate came out as `0` and the parity difference was
+  always exactly `0.000` — the check passed no matter how skewed the model
+  was. Verified against a maximally discriminatory model (every man
+  selected, no women): the check reported `0.000` where the true parity
+  difference is `1.000`. This mattered in practice because the documented
+  quickstart passes `model.predict_proba(X)[:, 1]`, so the default usage
+  disabled the check. `y_pred` is now binarised at the new
+  `FairnessConfig.decision_threshold` (default `0.5`); predictions already
+  in `{0, 1}` are untouched, so callers passing hard labels see no change.
+- **`ShapSubgroupCheck` crashed on `RandomForestClassifier`.** shap returns
+  a 3-D `(rows, features, classes)` array for some classifiers and 2-D for
+  others, and which you get changed across shap versions. Building a
+  DataFrame from the 3-D form raised `ValueError: Must pass 2-d input`,
+  which the gate surfaced as a blocking `CHECK_ERROR`. Binary output is now
+  reduced to the positive class; genuine multiclass reports
+  `NOT_APPLICABLE` rather than guessing at a class.
+- **The `structured` extra resolved to a combination that could not
+  import.** `shap>=0.44,<0.47` is incompatible with `numpy>=2.0`, which the
+  `numpy>=1.23,<3.0` range permits, so a fresh install produced shap 0.46
+  alongside numpy 2.x and `import shap` raised `TypeError: Converting
+  'np.inexact' or 'np.floating' to a dtype not allowed`. Since
+  `ShapSubgroupCheck` catches only `ImportError`, this surfaced as a
+  blocking `CHECK_ERROR` rather than a graceful skip. The floor is now
+  `shap>=0.48` (imports cleanly against numpy 2.x, ships cp313 wheels) and
+  the ceiling `<0.50`, which raised its own Python floor to 3.11 — above
+  this package's `requires-python`.
+
+### Added
+- `FairnessConfig.decision_threshold` — the cutoff used to binarise
+  continuous predictions for `DisparateImpactCheck`. Reported in that
+  check's result metadata so a report states what it measured against.
+- `examples/bdp_model_gate_walkthrough.ipynb` — an end-to-end notebook
+  covering the full public API, committed with outputs.
+- `tests/test_fairness_fixes.py` — regression tests for both fairness bugs,
+  including one that asserts on the result *flag* rather than merely that
+  results exist. Asserting existence is why the SHAP crash went unnoticed:
+  routed through `ModelGate`, a raising check still produces a result.
+
+### Changed
+- CI test matrix extended to Python 3.13, now that `shap>=0.48` supports it.
+
+
 ## [0.2.0] - 2026-08-26
 
 ### Added
@@ -111,6 +159,7 @@ All notable changes to this project are documented here. Format follows
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vanjy-eng/model-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vanjy-eng/model-gate/releases/tag/v0.1.0

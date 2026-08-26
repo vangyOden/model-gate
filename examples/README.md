@@ -13,20 +13,16 @@ being run. It needs no external data or credentials.
 ### Running it
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 
-# One resolution pass — see gotcha 2 for why the pins go in the same command.
 pip install \
   -i https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  "bdp-model-gate[structured]==0.2.0" \
-  "numpy==1.26.4" "scipy==1.13.1" "scikit-learn==1.5.2" \
-  "pandas==2.2.3" "shap==0.46.0" \
-  jupyter
+  "bdp-model-gate[structured]" jupyter
 jupyter lab examples/bdp_model_gate_walkthrough.ipynb
 ```
 
-### Two install gotchas
+### Two install notes
 
 **1. TestPyPI needs `--extra-index-url`.** TestPyPI does not mirror `numpy`,
 `pandas`, `scikit-learn`, `fairlearn` or `shap`, so the bare
@@ -34,27 +30,28 @@ jupyter lab examples/bdp_model_gate_walkthrough.ipynb
 dependencies. `--extra-index-url https://pypi.org/simple/` lets pip fall back
 to real PyPI for them.
 
-**2. The `structured` extra currently resolves to a broken combination.**
-`shap>=0.44,<0.47` is not compatible with `numpy>=2.0`, but `pyproject.toml`
-allows `numpy<3.0`. A fresh install therefore picks up numpy 2.x and shap
-0.46, and `import shap` raises:
+**2. `shap` pins (fixed in 0.2.1).** In 0.2.0 and earlier the `structured`
+extra allowed `shap>=0.44,<0.47`, which cannot import against `numpy>=2.0` —
+a combination the `numpy<3.0` range permitted. A fresh install produced shap
+0.46 with numpy 2.x and raised:
 
 ```
 TypeError: Converting `np.inexact` or `np.floating` to a dtype not allowed
 ```
 
-Until the pins are tightened, install a numpy-1 stack **in the same pip
-command** as the package (installing first and downgrading afterwards can
-leave numpy's compiled libraries broken):
+0.2.1 raises the floor to `shap>=0.48`, which imports cleanly against numpy
+2.x and ships cp313 wheels, so no manual pinning is needed and Python
+3.9–3.13 all work. If you are installing **0.2.0**, pin a numpy-1 stack in
+the *same* pip command as the package (installing first and downgrading
+afterwards can leave numpy's compiled libraries broken):
 
 ```bash
 pip install "numpy==1.26.4" "scipy==1.13.1" "scikit-learn==1.5.2" \
             "pandas==2.2.3" "shap==0.46.0"
 ```
 
-Also note `shap<0.47` publishes no wheels for Python 3.13 — use Python ≤ 3.12
-if you want `ShapSubgroupCheck` to run. Without shap the check reports
-`NOT_APPLICABLE` and the rest of the gate is unaffected.
-
-The notebook's outputs were produced on Python 3.12 with that pinned stack,
-against `bdp-model-gate==0.2.0` installed from TestPyPI.
+The committed outputs were produced on Python 3.13 against
+`bdp-model-gate==0.2.1` (built from this repository — 0.2.1 is not on
+TestPyPI yet) with shap 0.49.1 and numpy 2.5.2. An earlier pass was
+validated against `0.2.0` installed from TestPyPI to confirm the published
+package works.
