@@ -329,4 +329,4 @@ This is all separate from `ci_examples/`, which are pre-deployment gates
 for models *built by* consumers of this library, not for the library's own
 code.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+See [`CHANGELOG.md`](https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md) for release history.
