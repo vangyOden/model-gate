@@ -8,6 +8,8 @@ from .._logging import get_logger
 from ..config import FairnessConfig
 from ..core.base import BaseCheck, CheckResult
 from ..metrics import to_hard_labels
+from ..model import ModelAdapter
+from ..task import ALL_TASKS, BINARY, CLASSIFICATION_TASKS
 
 logger = get_logger("fairness")
 
@@ -19,6 +21,7 @@ class ProxyCorrelationCheck(BaseCheck):
     name = "proxy_correlation"
     category = "fairness"
     blocking = False
+    supported_tasks = ALL_TASKS  # compares features to attributes, not predictions
 
     def __init__(self, config: FairnessConfig | None = None):
         self.config = config or FairnessConfig()
@@ -93,6 +96,9 @@ class DisparateImpactCheck(BaseCheck):
     name = "disparate_impact"
     category = "fairness"
     blocking = False
+    # Demographic parity counts a selected class; there is none for a
+    # continuous target. Regression uses the regression_fairness suite.
+    supported_tasks = CLASSIFICATION_TASKS
 
     def __init__(self, config: FairnessConfig | None = None):
         self.config = config or FairnessConfig()
@@ -161,12 +167,13 @@ class ShapSubgroupCheck(BaseCheck):
     name = "shap_subgroup_gap"
     category = "fairness"
     blocking = False
+    supported_tasks = ALL_TASKS  # SHAP contributions are defined for any output
 
     def __init__(self, config: FairnessConfig | None = None):
         self.config = config or FairnessConfig()
 
     @staticmethod
-    def _build_explainer(shap_module, model, X):
+    def _build_explainer(shap_module, model, X, adapter=None):
         """TreeExplainer is dramatically faster and exact for tree-based
         models; fall back to the generic (permutation/kernel) Explainer for
         everything else."""
@@ -184,7 +191,17 @@ class ShapSubgroupCheck(BaseCheck):
                 return shap_module.TreeExplainer(model)
             except Exception:
                 pass  # fall through to generic explainer if TreeExplainer can't handle this model
-        return shap_module.Explainer(model, X)
+        if model is not None:
+            try:
+                return shap_module.Explainer(model, X)
+            except (TypeError, ValueError):
+                pass  # not an estimator shap recognises — fall through
+        # shap's generic Explainer wants a callable. Hand it the adapter's
+        # predict — the documented black-box pattern — which works for a
+        # predict_fn-only context where there is no model object at all.
+        if adapter is None:
+            adapter = ModelAdapter(model=model)
+        return shap_module.Explainer(adapter.predict, X)
 
     @staticmethod
     def _positive_class_values(values):
@@ -229,8 +246,26 @@ class ShapSubgroupCheck(BaseCheck):
                 )
             ]
 
-        explainer = self._build_explainer(shap, context.model, context.X)
-        shap_values = explainer(context.X)
+        try:
+            explainer = self._build_explainer(
+                shap, context.model, context.X, ModelAdapter.from_context(context)
+            )
+            shap_values = explainer(context.X)
+        except Exception as exc:
+            # A non-blocking fairness check must not block a deploy because
+            # shap could not introspect the model. ModelGate would otherwise
+            # convert the exception into a blocking CHECK_ERROR.
+            logger.warning("shap could not explain this model: %r", exc)
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    "NOT_APPLICABLE",
+                    f"shap could not explain this model ({type(exc).__name__}: {exc}) — "
+                    "subgroup SHAP gaps were not evaluated",
+                    self.blocking,
+                )
+            ]
         values = self._positive_class_values(shap_values.values)
         if values is None:
             n_classes = np.asarray(shap_values.values).shape[-1]
@@ -286,6 +321,9 @@ class CounterfactualFlipCheck(BaseCheck):
     name = "counterfactual_flip"
     category = "fairness"
     blocking = False
+    # Measures a shift in P(positive class); regression's analogue is the
+    # mean prediction shift, which GroupMeanGapCheck already covers.
+    supported_tasks = (BINARY,)
 
     def __init__(self, config: FairnessConfig | None = None, n_samples: int = 200):
         self.config = config or FairnessConfig()
@@ -302,13 +340,15 @@ class CounterfactualFlipCheck(BaseCheck):
                     self.blocking,
                 )
             ]
-        if not hasattr(context.model, "predict_proba"):
+        adapter = ModelAdapter.from_context(context)
+        if not adapter.can_predict_proba:
             return [
                 CheckResult(
                     self.name,
                     self.category,
                     "NOT_APPLICABLE",
-                    "model has no predict_proba — counterfactual check needs probability outputs",
+                    "no probability output available — this check needs either a model "
+                    "with .predict_proba() or context.predict_proba_fn",
                     self.blocking,
                 )
             ]
@@ -319,11 +359,11 @@ class CounterfactualFlipCheck(BaseCheck):
             if attr not in X.columns:
                 continue  # attribute excluded from model inputs — nothing to flip
             sample = X.sample(min(self.n_samples, len(X)), random_state=42).copy()
-            base_preds = context.model.predict_proba(sample)[:, 1]
+            base_preds = adapter.predict_positive_proba(sample)
             for val in context.protected_df[attr].unique():
                 flipped = sample.copy()
                 flipped[attr] = val
-                flipped_preds = context.model.predict_proba(flipped)[:, 1]
+                flipped_preds = adapter.predict_positive_proba(flipped)
                 shift = float(np.mean(np.abs(flipped_preds - base_preds)))
                 flag = (
                     "COUNTERFACTUAL_RISK"

@@ -17,15 +17,19 @@ import numpy as np
 import pandas as pd
 
 from ..exceptions import GateValidationError
+from ..model import ModelAdapter
+from ..task import REGRESSION, resolve_task, validate_task
 
 if TYPE_CHECKING:
     from .context import StructuredGateContext
 
 
 def validate_structured_context(context: StructuredGateContext) -> None:
+    _validate_task(context)
     _validate_model(context)
     _validate_features(context)
     _validate_labels(context)
+    _validate_expected_loss(context)
     _validate_protected_df(context)
     _validate_model_card(context)
     _validate_performance_inputs(context)
@@ -33,16 +37,29 @@ def validate_structured_context(context: StructuredGateContext) -> None:
 
 
 def _validate_model(context: StructuredGateContext) -> None:
+    for name in ("predict_fn", "predict_proba_fn", "gradient_fn"):
+        fn = getattr(context, name, None)
+        if fn is not None and not callable(fn):
+            raise GateValidationError(f"context.{name} must be callable, got {type(fn).__name__}")
+
+    if ModelAdapter.from_context(context).can_predict:
+        return
+
     if context.model is None:
-        raise GateValidationError("context.model is required and cannot be None")
-    if not hasattr(context.model, "predict"):
         raise GateValidationError(
-            "context.model must expose a .predict() method; "
-            f"got {type(context.model).__name__} which does not"
+            "no model supplied: pass either context.model (anything with .predict(), "
+            "or a callable) or context.predict_fn=lambda df: ... for a model this "
+            "library cannot call directly, such as a PyTorch module or a remote endpoint"
         )
+    raise GateValidationError(
+        f"context.model is a {type(context.model).__name__}, which has no .predict() "
+        "method and is not callable — supply context.predict_fn instead"
+    )
 
 
 def _validate_features(context: StructuredGateContext) -> None:
+    if context.X is None:
+        raise GateValidationError("context.X is required — no feature data to evaluate")
     if not isinstance(context.X, pd.DataFrame):
         raise GateValidationError(
             f"context.X must be a pandas DataFrame, got {type(context.X).__name__}"
@@ -65,13 +82,60 @@ def _validate_labels(context: StructuredGateContext) -> None:
                 f"{n_rows} rows — they must be aligned"
             )
 
-    if context.y_true is not None:
-        unique_labels = pd.unique(np.asarray(context.y_true))
-        if len(unique_labels) < 2:
-            raise GateValidationError(
-                f"context.y_true has only one unique value ({unique_labels!r}) — "
-                "most checks (AUC, disparate impact) need at least two classes present"
-            )
+    if context.y_true is None:
+        return
+
+    task = resolve_task(context)
+    unique_labels = pd.unique(np.asarray(context.y_true))
+
+    if len(unique_labels) < 2:
+        detail = (
+            "a constant target has no variance to explain, so every regression metric is degenerate"
+            if task == REGRESSION
+            else "most checks (AUC, disparate impact) need at least two classes present"
+        )
+        raise GateValidationError(
+            f"context.y_true has only one unique value ({unique_labels!r}) — {detail}"
+        )
+
+    if task == REGRESSION:
+        for name, values in (("y_true", context.y_true), ("y_pred", context.y_pred)):
+            if values is None:
+                continue
+            arr = np.asarray(values)
+            if arr.dtype.kind not in "iuf":
+                raise GateValidationError(
+                    f"context.{name} must be numeric for a regression task, got dtype "
+                    f"{arr.dtype} — set context.task explicitly if this is really "
+                    "a classification problem"
+                )
+            if not np.all(np.isfinite(arr.astype(float))):
+                raise GateValidationError(
+                    f"context.{name} contains NaN or infinite values, which every "
+                    "regression metric would propagate"
+                )
+
+
+def _validate_task(context: StructuredGateContext) -> None:
+    validate_task(getattr(context, "task", "auto"))
+
+
+def _validate_expected_loss(context: StructuredGateContext) -> None:
+    expected_loss = getattr(context, "expected_loss", None)
+    if expected_loss is None:
+        return
+    arr = np.asarray(expected_loss)
+    if arr.dtype.kind not in "iuf":
+        raise GateValidationError(f"context.expected_loss must be numeric, got dtype {arr.dtype}")
+    if len(arr) != len(context.X):
+        raise GateValidationError(
+            f"context.expected_loss has length {len(arr)}, but context.X has "
+            f"{len(context.X)} rows — they must be row-aligned"
+        )
+    if np.any(np.asarray(arr, dtype=float) < 0):
+        raise GateValidationError(
+            "context.expected_loss contains negative values — an expected loss cannot be below zero"
+        )
 
 
 def _validate_protected_df(context: StructuredGateContext) -> None:

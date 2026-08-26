@@ -2,6 +2,8 @@
 tune thresholds per model/use case; defaults are reasonable starting points,
 not regulatory guidance."""
 
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass, field
 
@@ -15,10 +17,25 @@ class FairnessConfig:
     `decision_threshold` turns continuous predictions into class labels for
     `DisparateImpactCheck`, which measures selection *rates* and so needs
     hard classes. Predictions already in {0, 1} are used as-is.
+
+    The regression thresholds are relative rather than absolute: a gap is
+    measured as a fraction of the overall mean (or overall error), so the
+    same default is meaningful for a premium in naira and for a claim count.
+    `min_group_size` guards against a three-policy segment producing a wild
+    ratio that reads as a fairness finding.
     """
 
     disparity_threshold: float = 0.10  # max demographic parity difference
     decision_threshold: float = 0.5  # cutoff for binarising y_pred before parity
+    # --- regression fairness (see bdp_model_gate.structured.regression_fairness) ---
+    # All four are *relative* gaps, expressed as a fraction of the overall
+    # figure, so one set of defaults works whether the target is naira
+    # premiums or claim counts.
+    mean_gap_threshold: float = 0.10  # max relative gap in group mean prediction
+    error_parity_threshold: float = 0.20  # max relative gap in per-group error
+    calibration_threshold: float = 0.10  # max relative predicted-vs-actual gap per group
+    loss_ratio_threshold: float = 0.10  # max relative gap in premium-over-expected-loss
+    min_group_size: int = 30  # groups smaller than this are reported, not scored
     proxy_corr_threshold: float = 0.30  # eta^2 above this = proxy risk
     shap_gap_threshold: float = 0.15  # max cross-group SHAP contribution gap
     counterfactual_shift_threshold: float = 0.05  # max prediction shift on attribute flip
@@ -35,14 +52,22 @@ class PerformanceConfig:
     whichever of roc_auc/accuracy the installed dependencies support. Under
     "auto" a fallback is logged and named in the report, never silent.
 
-    `min_score` is interpreted against whichever metric ran, so set the two
-    together. `decision_threshold` is used to binarize continuous
+    Metrics point in different directions. Higher-is-better metrics
+    (roc_auc, f1, r2, ...) are gated with `min_score`; error metrics where
+    lower is better (rmse, mae, mape, poisson_deviance) are gated with
+    `max_error`, which has no default because a sensible ceiling depends
+    entirely on the scale of your target. Configuring an error metric
+    without `max_error` is a GateConfigurationError rather than a guess.
+
+    `min_score`/`max_error` are interpreted against whichever metric ran, so
+    set the metric and its threshold together. `decision_threshold` is used to binarize continuous
     predictions for metrics that need hard class labels; it's ignored for
     ranking metrics like roc_auc and for custom callables.
     """
 
     metric: MetricSetting = AUTO
     min_score: float = 0.80
+    max_error: float | None = None
     decision_threshold: float = 0.5
     max_latency_ms_p95: float = 200.0
     max_cost_per_inference: float = 0.002
@@ -98,6 +123,11 @@ class ComplianceConfig:
 class SecurityConfig:
     adversarial_epsilon: float = 0.02
     adversarial_flip_rate_threshold: float = 0.05
+    # Regression has no notion of a "flipped" prediction — every perturbation
+    # moves a continuous output. Sensitivity is measured instead as the mean
+    # relative change in prediction, which must stay proportionate to the
+    # size of the perturbation.
+    adversarial_max_relative_shift: float = 0.10
     pii_patterns: dict[str, str] = field(
         default_factory=lambda: {
             "email": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",

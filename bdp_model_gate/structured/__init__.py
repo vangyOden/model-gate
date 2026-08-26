@@ -9,6 +9,12 @@ from .fairness import (
     ShapSubgroupCheck,
 )
 from .performance import PerformanceThresholdCheck
+from .regression_fairness import (
+    CalibrationParityCheck,
+    ErrorParityCheck,
+    GroupMeanGapCheck,
+    LossRatioParityCheck,
+)
 from .security import (
     AdversarialRobustnessCheck,
     PIILeakageCheck,
@@ -18,6 +24,10 @@ from .security import (
 
 def default_structured_checks(config: GateConfig | None = None, include_plugins: bool = True):
     """The full default check suite for structured-data models.
+
+    Every check for every task is included; `ModelGate` reports
+    NOT_APPLICABLE for the ones that do not apply to the resolved task rather
+    than omitting them, so a report shows what was skipped and why.
 
     If `include_plugins` is True (default), also appends any checks
     registered via the `bdp_model_gate.checks` entry-point group — see
@@ -29,6 +39,10 @@ def default_structured_checks(config: GateConfig | None = None, include_plugins:
         DisparateImpactCheck(config.fairness),
         ShapSubgroupCheck(config.fairness),
         CounterfactualFlipCheck(config.fairness),
+        GroupMeanGapCheck(config.fairness),
+        ErrorParityCheck(config.fairness),
+        CalibrationParityCheck(config.fairness),
+        LossRatioParityCheck(config.fairness),
         PerformanceThresholdCheck(config.performance),
         ComplianceMappingCheck(config.compliance),
         AdversarialRobustnessCheck(config.security),
@@ -43,6 +57,10 @@ def default_structured_checks(config: GateConfig | None = None, include_plugins:
 
 
 __all__ = [
+    "CalibrationParityCheck",
+    "ErrorParityCheck",
+    "GroupMeanGapCheck",
+    "LossRatioParityCheck",
     "ProxyCorrelationCheck",
     "DisparateImpactCheck",
     "ShapSubgroupCheck",

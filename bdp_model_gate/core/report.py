@@ -21,6 +21,9 @@ class GateReport:
     results: list[CheckResult]
     model_metric: str | None = None
     model_score: float | None = None
+    #: The resolved prediction task this run was graded as. Recorded because
+    #: a report read months later must say what it assumed the model was.
+    task: str | None = None
 
     @property
     def model_auc(self) -> float | None:
@@ -74,6 +77,7 @@ class GateReport:
             )
         return {
             "gate_status": self.gate_status,
+            "task": self.task,
             "model_metric": self.model_metric,
             "model_score": self.model_score,
             # retained for consumers of the pre-0.2 report format; populated
@@ -92,7 +96,8 @@ class GateReport:
         return payload
 
     def summary(self) -> str:
-        lines = [f"Gate status: {self.gate_status} ({self.total_duration_ms:.0f}ms)"]
+        task_note = f", {self.task}" if self.task else ""
+        lines = [f"Gate status: {self.gate_status} ({self.total_duration_ms:.0f}ms{task_note})"]
         if self.model_metric is not None and self.model_score is not None:
             lines.append(f"  {self.model_metric}: {self.model_score:.4f}")
         for category in ("performance", "compliance", "security", "fairness"):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdp-model-gate"
-version = "0.2.1"
+version = "0.3.2"
 description = "Automated pre-deployment ML model governance gate: fairness, performance, compliance, and security checks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -92,7 +92,12 @@ line-length = 100
 target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+# FA catches PEP 604 (`X | None`) and PEP 585 syntax used without
+# `from __future__ import annotations`. Those annotations are evaluated at
+# runtime on Python 3.9, so without the import they are an import-time
+# TypeError there while passing cleanly on 3.10+ — invisible locally, and
+# it took down the whole 3.9 test job.
+select = ["E", "F", "I", "UP", "B", "FA"]
 ignore = ["E501"]  # line length handled by formatter, not worth failing CI over
 
 [tool.ruff.format]

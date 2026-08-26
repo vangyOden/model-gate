@@ -23,6 +23,7 @@ Example (Azure Pipelines / GitHub Actions):
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -33,6 +34,9 @@ import pandas as pd
 from ._logging import configure_logging, get_logger
 from .exceptions import BDPModelGateError
 from .metrics import AUTO, BUILTIN_METRICS
+from .model import ModelAdapter
+from .task import ALL_TASKS
+from .task import AUTO as TASK_AUTO
 
 logger = get_logger("cli")
 
@@ -50,10 +54,65 @@ def _load_model(path: str):
     return joblib.load(path)
 
 
-def _predict(model, X: pd.DataFrame):
-    if hasattr(model, "predict_proba"):
-        return model.predict_proba(X)[:, 1]
-    return model.predict(X)
+def _load_via_loader(spec: str):
+    """Imports and calls a `"package.module:factory"` loader.
+
+    joblib can only read pickles, which rules out `.pt` checkpoints, Keras
+    SavedModel directories, ONNX graphs and remote endpoints. Rather than
+    take a dependency on every framework, the CLI lets you name a function
+    that returns something callable — your loader does the importing.
+
+        # mypkg/serving.py
+        def load_scorer():
+            net = torch.load("model.pt"); net.eval()
+            return lambda df: net(torch.tensor(df.values).float()).detach().numpy()
+
+        bdp-model-gate --model-loader "mypkg.serving:load_scorer" ...
+    """
+    if ":" not in spec:
+        raise BDPModelGateError(f"--model-loader must be 'package.module:factory', got {spec!r}")
+    module_name, _, attr = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise BDPModelGateError(
+            f"could not import {module_name!r} for --model-loader — is it on PYTHONPATH? ({exc})"
+        ) from exc
+    try:
+        factory = getattr(module, attr)
+    except AttributeError as exc:
+        raise BDPModelGateError(f"module {module_name!r} has no attribute {attr!r}") from exc
+    if not callable(factory):
+        raise BDPModelGateError(f"{spec!r} is not callable")
+
+    loaded = factory()
+    if not (callable(loaded) or hasattr(loaded, "predict")):
+        raise BDPModelGateError(
+            f"{spec!r} returned a {type(loaded).__name__}, which is neither callable nor "
+            "has a .predict() method — return a model or a scoring function"
+        )
+    logger.info("loaded model via %s -> %s", spec, type(loaded).__name__)
+    return loaded
+
+
+def _predict(model, X: pd.DataFrame, task: str):
+    """Produces y_pred appropriate to the task.
+
+    Only *binary* classification wants `predict_proba(X)[:, 1]`. Taking
+    column 1 of a multiclass model's probabilities silently yields P(class 1)
+    — a real number that scores as though it were the positive class, which
+    is how a gate reports a confident, meaningless verdict. Regression has no
+    predict_proba at all.
+    """
+    adapter = ModelAdapter(model=model)
+    wants_proba = task in (TASK_AUTO, "binary")
+    if wants_proba and adapter.can_predict_proba:
+        try:
+            return adapter.predict_positive_proba(X)
+        except BDPModelGateError as exc:
+            # Multi-column output means it is not a binary classifier.
+            logger.info("%s — falling back to .predict(). Pass --task to be explicit.", exc)
+    return adapter.predict(X)
 
 
 def _load_structured_config_file(path: str) -> dict[str, Any]:
@@ -96,7 +155,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="bdp-model-gate",
         description="Run the BDP Model Gate pre-deployment governance gate against a trained model.",
     )
-    parser.add_argument("--model", required=True, help="Path to a joblib-serialized model")
+    model_source = parser.add_mutually_exclusive_group(required=True)
+    model_source.add_argument("--model", help="Path to a joblib-serialized model")
+    model_source.add_argument(
+        "--model-loader",
+        help=(
+            "A 'package.module:factory' function returning a model or a "
+            "fn(DataFrame) -> array. Use this for anything joblib cannot unpickle — "
+            "PyTorch checkpoints, Keras SavedModel, ONNX, or a remote scoring endpoint. "
+            "Your loader does the framework import, so this package needs no "
+            "deep-learning dependency."
+        ),
+    )
     parser.add_argument("--data", required=True, help="Path to a CSV of validation data")
     parser.add_argument("--target-col", required=True, help="Column name of the ground-truth label")
     parser.add_argument(
@@ -107,6 +177,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--latencies", help="Path to a text/CSV file of per-request latencies in ms, one per line"
     )
     parser.add_argument("--cost-per-inference", type=float, help="Estimated cost per inference")
+    parser.add_argument(
+        "--task",
+        choices=[TASK_AUTO, *ALL_TASKS],
+        default=TASK_AUTO,
+        help=(
+            "Prediction task (default: auto, which infers from the target column and "
+            "logs what it inferred). Set explicitly for anything you gate on — a count "
+            "target such as claims frequency looks identical to a multiclass one."
+        ),
+    )
+    parser.add_argument(
+        "--expected-loss-col",
+        help=(
+            "Column in --data holding a per-row expected loss or technical premium. "
+            "Enables the loss-ratio parity fairness check for regression models."
+        ),
+    )
     parser.add_argument(
         "--metric",
         choices=[AUTO, *sorted(BUILTIN_METRICS)],
@@ -119,7 +206,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-score",
         type=float,
-        help="Minimum acceptable value of --metric; below this the gate blocks",
+        help=(
+            "Minimum acceptable value of --metric, for higher-is-better metrics "
+            "(roc_auc, f1, r2, ...); below this the gate blocks"
+        ),
+    )
+    parser.add_argument(
+        "--max-error",
+        type=float,
+        help=(
+            "Maximum acceptable value of --metric, for error metrics where lower is "
+            "better (rmse, mae, mape, poisson_deviance); above this the gate blocks. "
+            "Required when one of those metrics is selected — there is no default, "
+            "since a sensible ceiling depends on the scale of your target."
+        ),
     )
     parser.add_argument(
         "--decision-threshold",
@@ -169,6 +269,7 @@ def _apply_cli_overrides(gate_config, args):
     for flag_name, config_field in (
         ("metric", "metric"),
         ("min_score", "min_score"),
+        ("max_error", "max_error"),
         ("decision_threshold", "decision_threshold"),
     ):
         value = getattr(args, flag_name, None)
@@ -187,11 +288,22 @@ def main(argv=None) -> int:
         from bdp_model_gate.exceptions import GateValidationError
         from bdp_model_gate.structured import default_structured_checks
 
-        model = _load_model(args.model)
+        model = _load_model(args.model) if args.model else _load_via_loader(args.model_loader)
         df = pd.read_csv(args.data)
         y_true = df[args.target_col].values
-        X = df.drop(columns=[args.target_col])
-        y_pred = _predict(model, X)
+        drop_cols = [args.target_col]
+
+        expected_loss = None
+        if args.expected_loss_col:
+            if args.expected_loss_col not in df.columns:
+                raise BDPModelGateError(
+                    f"--expected-loss-col {args.expected_loss_col!r} is not a column in {args.data}"
+                )
+            expected_loss = df[args.expected_loss_col].to_numpy()
+            drop_cols.append(args.expected_loss_col)
+
+        X = df.drop(columns=drop_cols)
+        y_pred = _predict(model, X, args.task)
 
         protected_df = pd.read_csv(args.protected) if args.protected else None
         model_card = json.load(open(args.model_card)) if args.model_card else None
@@ -216,6 +328,8 @@ def main(argv=None) -> int:
             latencies_ms=latencies_ms,
             cost_per_inference=args.cost_per_inference,
             model_card=model_card,
+            expected_loss=expected_loss,
+            task=args.task,
         )
 
         report = ModelGate(checks=default_structured_checks(gate_config)).run(context)

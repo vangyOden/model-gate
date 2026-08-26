@@ -34,6 +34,7 @@ import numpy as np
 
 from ._logging import get_logger
 from .exceptions import GateConfigurationError
+from .task import BINARY, CLASSIFICATION_TASKS, REGRESSION
 
 logger = get_logger("metrics")
 
@@ -51,10 +52,87 @@ class MetricSpec:
     #: Pure-numpy equivalent, used only when scikit-learn isn't installed.
     #: None means this metric genuinely requires scikit-learn.
     fallback: MetricFn | None = None
+    #: False for error metrics (RMSE, MAE, MAPE, deviance), where a *lower*
+    #: value is better. These are gated with `max_error`, not `min_score`.
+    greater_is_better: bool = True
+    #: Which prediction tasks this metric can score.
+    tasks: tuple[str, ...] = CLASSIFICATION_TASKS
 
 
 def _accuracy_numpy(y_true: Any, y_pred: Any) -> float:
     return float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
+
+
+def _as_floats(y_true: Any, y_pred: Any) -> tuple[np.ndarray, np.ndarray]:
+    return np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)
+
+
+# The regression metrics are short enough to implement directly, which keeps
+# them available on a core install and sidesteps scikit-learn's churn around
+# `mean_squared_error(squared=False)` / `root_mean_squared_error`.
+
+
+def _rmse_numpy(y_true: Any, y_pred: Any) -> float:
+    t, p = _as_floats(y_true, y_pred)
+    return float(np.sqrt(np.mean((t - p) ** 2)))
+
+
+def _mae_numpy(y_true: Any, y_pred: Any) -> float:
+    t, p = _as_floats(y_true, y_pred)
+    return float(np.mean(np.abs(t - p)))
+
+
+def _r2_numpy(y_true: Any, y_pred: Any) -> float:
+    t, p = _as_floats(y_true, y_pred)
+    ss_res = float(np.sum((t - p) ** 2))
+    ss_tot = float(np.sum((t - np.mean(t)) ** 2))
+    if ss_tot == 0.0:
+        # A constant target has no variance to explain. Perfect prediction is
+        # 1.0; anything else is undefined rather than arbitrarily bad.
+        return 1.0 if ss_res == 0.0 else float("-inf")
+    return 1.0 - ss_res / ss_tot
+
+
+def _mape_numpy(y_true: Any, y_pred: Any) -> float:
+    """Mean absolute percentage error, skipping zero actuals.
+
+    MAPE is the natural metric for skewed money targets like claims severity,
+    but it is undefined where the actual is 0. Those rows are excluded and the
+    exclusion is logged, rather than returning inf for the whole batch.
+    """
+    t, p = _as_floats(y_true, y_pred)
+    nonzero = t != 0
+    n_skipped = int((~nonzero).sum())
+    if n_skipped:
+        logger.warning(
+            "mape: skipped %d row(s) with a zero actual — MAPE is undefined there. "
+            "Consider 'mae' or 'poisson_deviance' for targets with true zeros.",
+            n_skipped,
+        )
+    if not nonzero.any():
+        raise GateConfigurationError(
+            "every y_true value is zero, so MAPE is undefined for this dataset — "
+            "use 'mae', 'rmse' or 'poisson_deviance' instead"
+        )
+    return float(np.mean(np.abs((t[nonzero] - p[nonzero]) / t[nonzero])))
+
+
+def _poisson_deviance_numpy(y_true: Any, y_pred: Any) -> float:
+    """Mean Poisson deviance — the right error measure for count targets such
+    as claims frequency, where RMSE understates the cost of over-dispersion."""
+    t, p = _as_floats(y_true, y_pred)
+    if np.any(p <= 0):
+        raise GateConfigurationError(
+            "poisson_deviance requires strictly positive predictions "
+            "(it takes their log); got a prediction <= 0"
+        )
+    if np.any(t < 0):
+        raise GateConfigurationError("poisson_deviance requires non-negative y_true")
+    # x*log(x/mu) -> 0 as x -> 0, so the zero-actual rows contribute only the
+    # (mu - x) term. np.where alone would still evaluate log(0), hence the mask.
+    safe_t = np.where(t > 0, t, 1.0)
+    term = np.where(t > 0, t * np.log(safe_t / p), 0.0)
+    return float(np.mean(2.0 * (term - (t - p))))
 
 
 BUILTIN_METRICS: dict[str, MetricSpec] = {
@@ -71,12 +149,62 @@ BUILTIN_METRICS: dict[str, MetricSpec] = {
     "f1": MetricSpec("f1", "f1_score", needs_hard_labels=True),
     "precision": MetricSpec("precision", "precision_score", needs_hard_labels=True),
     "recall": MetricSpec("recall", "recall_score", needs_hard_labels=True),
+    # Regression. All have numpy implementations, so they work on a core
+    # install; scikit-learn is used when present for the ones it defines.
+    "rmse": MetricSpec(
+        "rmse",
+        "",
+        needs_hard_labels=False,
+        fallback=_rmse_numpy,
+        greater_is_better=False,
+        tasks=(REGRESSION,),
+    ),
+    "mae": MetricSpec(
+        "mae",
+        "mean_absolute_error",
+        needs_hard_labels=False,
+        fallback=_mae_numpy,
+        greater_is_better=False,
+        tasks=(REGRESSION,),
+    ),
+    "mape": MetricSpec(
+        "mape",
+        "",
+        needs_hard_labels=False,
+        fallback=_mape_numpy,
+        greater_is_better=False,
+        tasks=(REGRESSION,),
+    ),
+    "poisson_deviance": MetricSpec(
+        "poisson_deviance",
+        "",
+        needs_hard_labels=False,
+        fallback=_poisson_deviance_numpy,
+        greater_is_better=False,
+        tasks=(REGRESSION,),
+    ),
+    "r2": MetricSpec(
+        "r2",
+        "r2_score",
+        needs_hard_labels=False,
+        fallback=_r2_numpy,
+        greater_is_better=True,
+        tasks=(REGRESSION,),
+    ),
 }
 
-#: Order tried by metric="auto". roc_auc is threshold-independent and the
-#: better default for the imbalanced problems this gate typically sees;
-#: accuracy is the base-install fallback since it needs no extra deps.
-AUTO_PREFERENCE = ("roc_auc", "accuracy")
+#: Order tried by metric="auto", per task. For classification, roc_auc is
+#: threshold-independent and the better default for the imbalanced problems
+#: this gate typically sees, with accuracy as the base-install fallback. For
+#: regression, r2 is scale-free — an RMSE default would mean nothing without
+#: knowing whether the target is premiums in naira or claim counts.
+AUTO_PREFERENCE_BY_TASK: dict[str, tuple[str, ...]] = {
+    BINARY: ("roc_auc", "accuracy"),
+    REGRESSION: ("r2",),
+}
+
+#: Backwards-compatible alias for the binary preference order.
+AUTO_PREFERENCE = AUTO_PREFERENCE_BY_TASK[BINARY]
 
 AUTO = "auto"
 
@@ -88,6 +216,8 @@ class ResolvedMetric:
     name: str
     fn: MetricFn
     needs_hard_labels: bool
+    #: False for error metrics — gated with `max_error` rather than `min_score`.
+    greater_is_better: bool = True
     #: True when metric="auto" could not use its first preference. The check
     #: surfaces this in its detail string so a reader of the report knows
     #: the score isn't the metric they'd expect by default.
@@ -96,7 +226,7 @@ class ResolvedMetric:
     used_fallback_impl: bool = False
 
 
-def validate_metric(metric: MetricSetting) -> None:
+def validate_metric(metric: MetricSetting, task: str | None = None) -> None:
     """Cheap, import-free check that `metric` is a usable setting.
 
     Called when the check is constructed so a typo'd metric name fails at
@@ -110,10 +240,19 @@ def validate_metric(metric: MetricSetting) -> None:
         raise GateConfigurationError(
             f"performance.metric must be a metric name or a callable, got {type(metric).__name__}"
         )
-    if metric == AUTO or metric in BUILTIN_METRICS:
+    if metric == AUTO:
         return
-    valid = ", ".join([AUTO, *sorted(BUILTIN_METRICS)])
-    raise GateConfigurationError(f"unknown performance.metric {metric!r} — valid options: {valid}")
+    if metric not in BUILTIN_METRICS:
+        valid = ", ".join([AUTO, *sorted(BUILTIN_METRICS)])
+        raise GateConfigurationError(
+            f"unknown performance.metric {metric!r} — valid options: {valid}"
+        )
+    if task is not None and task not in BUILTIN_METRICS[metric].tasks:
+        applicable = ", ".join(sorted(m for m, sp in BUILTIN_METRICS.items() if task in sp.tasks))
+        raise GateConfigurationError(
+            f"performance.metric={metric!r} does not apply to a {task} task — "
+            f"metrics available for {task}: {applicable}"
+        )
 
 
 def _load_sklearn_metric(spec: MetricSpec) -> MetricFn | None:
@@ -124,33 +263,40 @@ def _load_sklearn_metric(spec: MetricSpec) -> MetricFn | None:
     return getattr(sk_metrics, spec.sklearn_fn, None)
 
 
-def resolve_metric(metric: MetricSetting) -> ResolvedMetric:
+def resolve_metric(metric: MetricSetting, task: str = BINARY) -> ResolvedMetric:
     """Turns a config value into a callable metric.
 
     Raises GateConfigurationError if an explicitly named metric can't be
     satisfied — the gate reports that as a blocking CHECK_ERROR rather than
     scoring the model with something the caller didn't ask for.
     """
-    validate_metric(metric)
+    validate_metric(metric, task)
 
     if callable(metric):
         name = getattr(metric, "__name__", None) or type(metric).__name__
+        # A custom callable's direction is unknowable, so it is treated as
+        # greater-is-better and gated with min_score. Negate inside your own
+        # function, or name a built-in error metric, if that is wrong.
         return ResolvedMetric(name=name, fn=metric, needs_hard_labels=False)
 
     if metric == AUTO:
-        return _resolve_auto()
+        return _resolve_auto(task)
 
     spec = BUILTIN_METRICS[metric]
     fn = _load_sklearn_metric(spec)
     if fn is not None:
-        return ResolvedMetric(spec.name, fn, spec.needs_hard_labels)
+        return ResolvedMetric(spec.name, fn, spec.needs_hard_labels, spec.greater_is_better)
     if spec.fallback is not None:
         logger.debug(
             "scikit-learn not installed — scoring %r with the built-in numpy implementation",
             spec.name,
         )
         return ResolvedMetric(
-            spec.name, spec.fallback, spec.needs_hard_labels, used_fallback_impl=True
+            spec.name,
+            spec.fallback,
+            spec.needs_hard_labels,
+            spec.greater_is_better,
+            used_fallback_impl=True,
         )
     raise GateConfigurationError(
         f"performance.metric={metric!r} requires scikit-learn — install it with "
@@ -159,13 +305,24 @@ def resolve_metric(metric: MetricSetting) -> ResolvedMetric:
     )
 
 
-def _resolve_auto() -> ResolvedMetric:
-    preferred = AUTO_PREFERENCE[0]
-    for position, name in enumerate(AUTO_PREFERENCE):
+def _resolve_auto(task: str = BINARY) -> ResolvedMetric:
+    preference = AUTO_PREFERENCE_BY_TASK.get(task)
+    if not preference:
+        raise GateConfigurationError(
+            f'performance.metric="auto" has no default for a {task} task — name a metric explicitly'
+        )
+    preferred = preference[0]
+    for position, name in enumerate(preference):
         spec = BUILTIN_METRICS[name]
         fn = _load_sklearn_metric(spec)
         if fn is not None:
-            return ResolvedMetric(spec.name, fn, spec.needs_hard_labels, is_fallback=position > 0)
+            return ResolvedMetric(
+                spec.name,
+                fn,
+                spec.needs_hard_labels,
+                spec.greater_is_better,
+                is_fallback=position > 0,
+            )
         if spec.fallback is not None:
             logger.warning(
                 "performance.metric='auto': %r is unavailable (scikit-learn not installed) — "
@@ -180,11 +337,12 @@ def _resolve_auto() -> ResolvedMetric:
                 spec.name,
                 spec.fallback,
                 spec.needs_hard_labels,
+                spec.greater_is_better,
                 is_fallback=position > 0,
                 used_fallback_impl=True,
             )
     raise GateConfigurationError(  # pragma: no cover — accuracy always has a numpy fallback
-        "no metric in AUTO_PREFERENCE could be resolved"
+        f"no metric in the {task} preference order could be resolved"
     )
 
 
@@ -206,6 +364,7 @@ def to_hard_labels(y_pred: Any, threshold: float) -> Any:
 __all__ = [
     "AUTO",
     "AUTO_PREFERENCE",
+    "AUTO_PREFERENCE_BY_TASK",
     "BUILTIN_METRICS",
     "MetricFn",
     "MetricSetting",

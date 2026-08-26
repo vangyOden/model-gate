@@ -6,6 +6,180 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-26
+
+### Fixed
+- **The package could not be imported on Python 3.9**, which is inside the
+  supported range (`requires-python = ">=3.9"`). `config.py` gained
+  `max_error: float | None` in 0.3.0 but has no
+  `from __future__ import annotations`, so the PEP 604 union was evaluated
+  at runtime — a dataclass field annotation, so it fired on import and took
+  every test module down at collection with
+  `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`.
+  Invisible on 3.10+, where PEP 604 is native. Broke the 3.9 CI job on both
+  the 0.3.0 and 0.3.1 pushes; every other job passed.
+
+### Changed
+- Ruff now selects the `FA` rules, which flag PEP 604 and PEP 585 syntax
+  used without `from __future__ import annotations`. `FA102` reproduces the
+  failure above statically, so lint catches it on any interpreter instead
+  of only the 3.9 CI job. This was the actual gap: `target-version = "py39"`
+  alone does not imply those checks.
+- Added a test that walks the package AST for the same pattern, so the guard
+  survives a change to the lint configuration.
+
+
+## [0.3.1] - 2026-08-26
+
+Any model, not just scikit-learn-shaped ones. Neural networks, raw
+boosters, custom classes and remote scoring endpoints are all gateable.
+Nothing in this release is breaking — an sklearn-style `model=` keeps
+working exactly as before.
+
+### Added
+- **`predict_fn`, `predict_proba_fn` and `gradient_fn`** on
+  `StructuredGateContext`. Each is a plain `fn(DataFrame) -> array`. The
+  boundary is deliberately "DataFrame in, array out": your function owns
+  tensor conversion, device placement, batching and auth, so this package
+  never imports a deep-learning framework and never guesses at a dtype.
+- **`context.model` is now optional.** A remote scoring endpoint has no
+  model object at all — `predict_fn` alone is a complete context. A bare
+  callable is also accepted as `model=`, so the two routes are
+  interchangeable rather than a trap.
+- **Probability-shape normalisation.** Binary classifiers emit
+  `(n, 2)` (scikit-learn), `(n, 1)` (a Keras sigmoid) or `(n,)` depending on
+  the framework; all three now reduce to one positive-class vector. A
+  genuinely multiclass `(n, k)` output is refused with a clear message
+  rather than silently sliced.
+- **`gradient_fn` powers a real targeted attack.**
+  `AdversarialRobustnessCheck` now prefers true per-row gradients, falls
+  back to `coef_` for linear models, and only then to random noise — so a
+  differentiable model gets a meaningful robustness probe instead of a weak
+  one. The method used is recorded in the result metadata as `gradient-fn`,
+  `gradient-directed` or `random`.
+- **CLI `--model-loader "package.module:factory"`.** joblib only reads
+  pickles, which rules out `.pt` checkpoints, Keras SavedModel directories,
+  ONNX graphs and endpoints. Name a function that returns a model or a
+  scoring callable and your loader does the framework import.
+  Mutually exclusive with `--model`.
+- `tests/test_model_agnostic.py` — 19 tests covering all three supply
+  routes, every binary probability shape, a torch-shaped model (callable,
+  array-in, column-vector-out) with no torch dependency, gradient
+  precedence, and the CLI loader.
+
+### Changed
+- **Checks no longer touch `context.model` directly.** A new internal
+  `bdp_model_gate.model.ModelAdapter` is the single place that knows how to
+  call a model. Previously five call sites each made their own
+  scikit-learn assumption — `.predict()`, a two-column `.predict_proba()`,
+  or `.coef_` — which is what made anything else unusable.
+- `CounterfactualFlipCheck` works for any model that can produce
+  probabilities, not only one with a `.predict_proba()` method. It was
+  `NOT_APPLICABLE` for every Keras and PyTorch model before.
+- `ShapSubgroupCheck` explains through the adapter, so it works on a
+  `predict_fn`-only context where there is no model object to introspect.
+
+### Notes
+- `roc_auc`, `average_precision`, `balanced_accuracy`, `f1`, `precision`
+  and `recall` still require scikit-learn. That is a *metrics* dependency,
+  not a model one — the regression metrics and `accuracy` are numpy-native
+  and work on a core install.
+- A public, subclassable `ModelAdapter` is deferred to 1.0.0. Until then
+  the extension point is a plain callable.
+
+
+## [0.3.0] - 2026-08-26
+
+Regression support, and the task abstraction it needed. Multiclass follows
+in 0.4.0; example notebooks in 0.4.1.
+
+### Added
+- **Prediction tasks.** `StructuredGateContext.task` accepts `"auto"`
+  (default), `"binary"`, `"multiclass"` or `"regression"`. `"auto"` infers
+  from `y_true` and **logs what it inferred** — inference is genuinely
+  ambiguous, since a claims-frequency target of 0/1/2/3 is indistinguishable
+  from a four-class problem by shape alone. Set it explicitly for anything
+  you gate on. New module `bdp_model_gate.task`.
+- **`BaseCheck.supported_tasks`.** Each check declares the tasks it can
+  meaningfully run against; `ModelGate` reports `NOT_APPLICABLE` for the
+  rest instead of letting them produce a confident, meaningless number. It
+  defaults to every task, so plugins written before 0.3.0 keep working.
+- **Regression metrics:** `rmse`, `mae`, `mape`, `poisson_deviance`
+  (for claims-frequency counts) and `r2`. All are implemented in numpy, so
+  they work on a core install and are unaffected by scikit-learn's churn
+  around `mean_squared_error(squared=False)`. `metric="auto"` resolves to
+  `r2` for regression — an RMSE default would mean nothing without knowing
+  whether the target is naira premiums or claim counts.
+- **`PerformanceConfig.max_error`.** Error metrics are lower-is-better, so
+  they are gated with `max_error` while higher-is-better metrics keep using
+  `min_score`; each metric declares its own direction and the report names
+  which comparison ran. `max_error` has no default, and configuring an error
+  metric without it raises `GateConfigurationError` rather than passing
+  silently — the comparison is the entire point of the gate.
+- **Four regression fairness checks** in
+  `bdp_model_gate.structured.regression_fairness`, each answering something
+  the others cannot:
+  - `LossRatioParityCheck` — is one group charged a higher **margin over its
+    own expected loss**? The actuarially meaningful test for a pricing model:
+    charging more in a higher-loss segment is risk-based pricing, charging a
+    higher margin is not justified by cost. Needs the new
+    `context.expected_loss`.
+  - `GroupMeanGapCheck` — raw spread in mean prediction across groups.
+  - `ErrorParityCheck` — is the model materially worse for one group?
+  - `CalibrationParityCheck` — does one group's prediction systematically
+    over- or under-shoot its realised outcome?
+
+  All are relative to the overall figure, so one threshold works for naira
+  premiums and claim counts alike, and groups below
+  `FairnessConfig.min_group_size` (default 30) are reported but not scored.
+- `StructuredGateContext.expected_loss` — per-row expected loss or technical
+  premium, row-aligned to `X`.
+- `GateReport.task`, in `summary()` and the JSON report: a report read months
+  later must state what it assumed the model was.
+- CLI `--task`, `--expected-loss-col` and `--max-error`.
+- `tests/test_regression.py` — 31 tests covering task inference, metric
+  direction, all four fairness notions and the validation rules.
+
+### Fixed
+- **The CLI silently mis-scored non-binary models.** `_predict` always took
+  `predict_proba(X)[:, 1]`, which for a three-class underwriting model is
+  just P(class 1) scored as though it were the positive class. It now picks
+  a task-appropriate prediction and logs when it declines the probability
+  path.
+- **`AdversarialRobustnessCheck` would have blocked every regression model.**
+  It measured a class flip rate, and any perturbation moves a continuous
+  output, so the rate was ~1.0 by construction. Regression now measures the
+  mean relative prediction shift against
+  `SecurityConfig.adversarial_max_relative_shift`.
+- Regression targets are now validated as numeric and finite, with an error
+  message that points at `context.task` when the target looks categorical.
+- **`AdversarialRobustnessCheck` perturbed features off a single global
+  scale.** The gradient-directed path derived one step size from the mean
+  magnitude across *all* numeric columns, so the largest column dominated:
+  with a sum-insured column in the millions beside a 0–10 risk score, the
+  risk score was shoved by thousands. That is not the "small relative
+  perturbation" the check documents. Each feature is now stepped relative to
+  its own magnitude, matching what the random path already did. Present
+  since 0.1.0; it inflated flip rates for classification too, but only
+  became glaring on regression, where it reported a relative prediction
+  shift of ~1448 and blocked a perfectly stable linear model.
+- **`ShapSubgroupCheck` hard-blocked on models exposing only `.predict()`.**
+  shap's generic `Explainer` wants a callable or an estimator it recognises,
+  but this library's own validation requires nothing more than `.predict()`.
+  Such a model raised, and `ModelGate` converts an exception into a
+  *blocking* `CHECK_ERROR` — so a non-blocking fairness check could stop a
+  deploy. It now falls back to explaining `model.predict` (the documented
+  black-box pattern) and, if shap still cannot cope, reports
+  `NOT_APPLICABLE` instead of raising.
+
+### Changed
+- `DisparateImpactCheck` and `CounterfactualFlipCheck` are classification-
+  only and report `NOT_APPLICABLE` for regression; the regression suite
+  covers that ground instead.
+- `AUTO_PREFERENCE` is superseded by `AUTO_PREFERENCE_BY_TASK`. The old name
+  remains as an alias for the binary order.
+
+
 ### Changed
 - Install instructions now point at PyPI. The package is published at
   <https://pypi.org/project/bdp-model-gate/>, so the TestPyPI
@@ -171,7 +345,10 @@ All notable changes to this project are documented here. Format follows
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vanjy-eng/model-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vanjy-eng/model-gate/releases/tag/v0.1.0

@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .._logging import get_logger
 from ..exceptions import GateValidationError
+from ..task import resolve_task, supports
 from .base import BaseCheck, CheckResult
 from .report import GateReport
 from .validation import validate_structured_context
@@ -46,9 +47,29 @@ class ModelGate:
     def run(self, context) -> GateReport:
         self._validate(context)  # raises GateValidationError on bad input — fails fast
 
+        # Resolved once per run, not per check: inference logs a line, and
+        # every check must agree on what the task is.
+        task = resolve_task(context)
+
         results: list[CheckResult] = []
         for check in self.checks:
             check_name = getattr(check, "name", check.__class__.__name__)
+            if not supports(check, task):
+                logger.debug("check=%s skipped — does not support task=%s", check_name, task)
+                results.append(
+                    CheckResult(
+                        check_name=check_name,
+                        category=getattr(check, "category", "unknown"),
+                        flag="NOT_APPLICABLE",
+                        detail=(
+                            f"check does not apply to a {task} task (supports: "
+                            f"{', '.join(getattr(check, 'supported_tasks', ()))})"
+                        ),
+                        blocking=getattr(check, "blocking", True),
+                        duration_ms=0.0,
+                    )
+                )
+                continue
             start = time.perf_counter()
             try:
                 check_results = check.run(context)
@@ -76,10 +97,11 @@ class ModelGate:
                 )
 
         metric, score = self._headline_score(results)
-        report = GateReport(results=results, model_metric=metric, model_score=score)
+        report = GateReport(results=results, model_metric=metric, model_score=score, task=task)
         logger.info(
-            "gate_status=%s n_flags=%d metric=%s score=%s",
+            "gate_status=%s task=%s n_flags=%d metric=%s score=%s",
             report.gate_status,
+            task,
             len(report.flags),
             metric,
             score,
