@@ -1,5 +1,9 @@
 # BDP Model Gate
 
+[![PyPI](https://img.shields.io/pypi/v/bdp-model-gate)](https://pypi.org/project/bdp-model-gate/)
+[![Python versions](https://img.shields.io/pypi/pyversions/bdp-model-gate)](https://pypi.org/project/bdp-model-gate/)
+[![License: MIT](https://img.shields.io/pypi/l/bdp-model-gate)](LICENSE)
+
 Automated pre-deployment ML model governance: fairness, performance,
 compliance, and security checks, run as a single gate that gives you a
 `PASS` / `NEEDS_REVIEW` / `BLOCKED` status to wire into CI before a model
@@ -10,6 +14,8 @@ audio) support is planned — see `bdp_model_gate.unstructured` for the reserved
 interface and roadmap notes.
 
 ## Install
+
+Available on [PyPI](https://pypi.org/project/bdp-model-gate/):
 
 ```bash
 # core (context/report/gate objects only — no check logic that needs ML libs)
@@ -328,5 +334,9 @@ rather than by the type checker.
 This is all separate from `ci_examples/`, which are pre-deployment gates
 for models *built by* consumers of this library, not for the library's own
 code.
+
+A runnable end-to-end walkthrough of everything above lives in
+[`examples/bdp_model_gate_walkthrough.ipynb`](examples/bdp_model_gate_walkthrough.ipynb),
+committed with outputs so it reads without being run.
 
 See [`CHANGELOG.md`](https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md) for release history.
