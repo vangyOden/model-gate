@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- Install instructions now point at PyPI. The package is published at
+  <https://pypi.org/project/bdp-model-gate/>, so the TestPyPI
+  `--extra-index-url` dance in `examples/` is gone; the example notebook's
+  committed outputs were regenerated against `0.2.1` installed from PyPI.
+- Added `Programming Language :: Python :: 3.9`–`3.13` classifiers. PyPI
+  generates its "python versions" badge from these rather than from
+  `requires-python`, so without them the badge reads only "3". Takes effect
+  on the next upload — 0.2.1 is already published without them.
+- README gained PyPI/Python/licence badges and a pointer to the example
+  notebook.
+
 ## [0.2.1] - 2026-08-26
 
 ### Fixed
