@@ -7,6 +7,63 @@ Current release: **0.4.1**.
 
 ---
 
+## 0.4.1-alpha — Documentation site
+
+Tracked separately from the library, which is already at 0.4.1 on PyPI. The
+`-alpha` marks the **site**, not the package: it lives in `web/`, is not yet
+deployed, and its structure will move before it is announced.
+
+### Why
+
+`README.md` reached 604 lines and 15 top-level sections. Someone who wants
+regression scrolls past binary classification, metric selection, custom
+checks and plugins to reach it. Splitting that up is the actual win; the site
+is the means.
+
+### Audience
+
+External — banks, insurers and any organisation with a working data-science
+team. Two consequences:
+
+- The generic quickstart leads. NDPA/NDPR defaults are presented as
+  **configurable defaults**, not the product's premise, so a reader in
+  another regime sees themselves in the hero.
+- Insurance use cases are the worked examples rather than the framing.
+
+### Shape: landing + docs, as pandas does it
+
+Two builds under one deploy, mirroring `pandas.pydata.org` (a hand-built
+marketing root, with Sphinx docs beneath it):
+
+```
+web/
+  landing/index.html    hand-built landing page, deployed at /
+  mkdocs.yml            MkDocs Material, deployed at /docs/
+  docs/                 the guide, reference and rendered notebooks
+  requirements.txt      pinned docs toolchain
+```
+
+- **MkDocs Material**, not Sphinx: the content is already Markdown, and the
+  API is 53 public objects — not the scale where intersphinx and autodoc
+  earn their configuration cost.
+- **`mkdocstrings`** generates the API reference from the docstrings that
+  already cover 89% of the public API, so it cannot drift from the source.
+- **`mkdocs-jupyter`** renders the five executed notebooks as pages, so
+  `examples/run_all.sh` keeps them honest and there is no second copy.
+- Multi-version docs (`mike`) deferred to 1.0 — pre-1.0 and moving this
+  fast, one accurate "latest" beats five stale versions.
+
+### Known risk
+
+A site multiplies the surface that can go stale, and this project has form:
+a notebook shipped two minor versions behind, and twice a notebook's prose
+contradicted its own output. The generated API reference and rendered
+notebooks are structurally protected. **Prose code blocks are not** —
+executing them in CI is the open question, deferred to the 0.4.2 robustness
+work rather than decided here.
+
+---
+
 ## 0.4.2 — Robustness of the checks themselves
 
 Five silent failures have shipped and been fixed so far. Every one passed the

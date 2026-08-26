@@ -21,6 +21,10 @@ __pycache__/
 htmlcov/
 coverage.xml
 
+# Website build output and the notebook copies build.sh syncs from examples/
+web/_site/
+web/docs/examples/*.ipynb
+
 # Gate output
 gate_report.json
 

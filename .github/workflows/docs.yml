@@ -1,0 +1,74 @@
+# Builds the website (landing page + docs) and publishes it to GitHub Pages.
+#
+# Separate from ci.yml, which tests the library. This one only runs when
+# something the site is built from actually changes.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "examples/**.ipynb"
+      - "bdp_model_gate/**.py"   # the API reference is generated from these
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - "examples/**.ipynb"
+      - "bdp_model_gate/**.py"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Allow one concurrent deployment, and let a newer push supersede an
+# in-flight one rather than queueing behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r web/requirements.txt
+          # mkdocstrings imports the package to read its docstrings.
+          pip install -e .
+
+      - name: Build
+        # build.sh runs `mkdocs build --strict`, which fails on a broken
+        # internal link or a page missing from the nav.
+        run: ./web/build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/_site
+
+  deploy:
+    name: Deploy to Pages
+    # Only from main — a pull request builds to prove it still compiles,
+    # but must not publish.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

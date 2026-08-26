@@ -1,0 +1,39 @@
+/* Pull Material's teal toward the deep, slightly institutional teal used on
+   the landing page, so the two builds read as one site. */
+:root {
+  --md-primary-fg-color:        #0e5c55;
+  --md-primary-fg-color--light: #157d73;
+  --md-primary-fg-color--dark:  #0a4741;
+  --md-accent-fg-color:         #0e5c55;
+  --md-default-bg-color:        #f7f8f7;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #4fd1be;
+  --md-accent-fg-color:         #6fdccb;
+  --md-default-bg-color:        #0c1413;
+  --md-code-bg-color:           #0f1817;
+}
+
+/* Verdict names read as state, not prose, wherever they appear inline. */
+.verdict-pass, .verdict-review, .verdict-blocked {
+  font-family: var(--md-code-font-family);
+  font-size: .8em;
+  font-weight: 600;
+  letter-spacing: .06em;
+  padding: .1em .4em;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.verdict-pass    { color: #2e6b43; background: #e3f0e7; }
+.verdict-review  { color: #8a5a0b; background: #f7ebd5; }
+.verdict-blocked { color: #9b2c2c; background: #f6e2e2; }
+
+[data-md-color-scheme="slate"] .verdict-pass    { color: #6fcf97; background: #14291d; }
+[data-md-color-scheme="slate"] .verdict-review  { color: #e3b341; background: #2e2411; }
+[data-md-color-scheme="slate"] .verdict-blocked { color: #f08a8a; background: #331a1a; }
+
+/* Tables of thresholds and metrics are read by eye, column by column. */
+.md-typeset table:not([class]) td:nth-child(n+2) {
+  font-variant-numeric: tabular-nums;
+}

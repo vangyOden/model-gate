@@ -1,0 +1,7 @@
+# Docs toolchain, pinned so a build is reproducible and a theme release
+# cannot silently change the output. Bump deliberately.
+mkdocs==1.6.1
+mkdocs-material==9.5.49
+mkdocstrings[python]==0.27.0
+mkdocs-jupyter==0.25.1
+ruff==0.16.4          # mkdocstrings uses it to format signatures
