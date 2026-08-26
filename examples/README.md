@@ -10,6 +10,14 @@ point, input validation, and the CLI with its three-way exit code.
 The notebook is committed **with outputs**, so it reads on GitHub without
 being run. It needs no external data or credentials.
 
+> **Covers 0.2.1.** Everything it shows still works, but it predates the
+> 0.3.x additions and does not cover them: prediction tasks
+> (`task="regression"`), the regression metrics and `max_error`, the four
+> regression fairness checks, or framework-agnostic models (`predict_fn`,
+> `gradient_fn`, `--model-loader`). Those are documented in the
+> [main README](../README.md); notebook coverage lands in 0.4.1, after
+> multiclass.
+
 ### Running it
 
 ```bash
@@ -28,7 +36,7 @@ report `NOT_APPLICABLE` instead of failing, which the notebook demonstrates.
 > combination its `numpy<3.0` range permitted — so a fresh install raised
 > `TypeError: Converting 'np.inexact' or 'np.floating' to a dtype not
 > allowed`. 0.2.1 raised the floor to `shap>=0.48` and fixed it. Prefer
-> 0.2.1 or later.
+> 0.2.1 or later — or just install the current release.
 
 The committed outputs were produced on Python 3.13 against
 `bdp-model-gate==0.2.1` installed from PyPI.
