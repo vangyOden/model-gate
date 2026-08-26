@@ -390,11 +390,14 @@ least to most favourable:
 
 ```python
 context = StructuredGateContext(
-    model=underwriter, X=X_val, y_true=decisions, y_pred=predicted,
+    model=underwriter,
+    X=X_val,
+    y_true=decisions,
+    y_pred=predicted,
     protected_df=protected_val,
     task="multiclass",
-    class_order=["decline", "refer", "accept"],   # marks it ordinal
-    favourable_classes=["accept"],                # defaults to the last entry
+    class_order=["decline", "refer", "accept"],  # marks it ordinal
+    favourable_classes=["accept"],  # defaults to the last entry
 )
 
 config = GateConfig()
@@ -438,8 +441,8 @@ The choice genuinely changes what you measure. "Was accepted" and "was not
 declined" are different questions:
 
 ```python
-context.favourable_classes = ["accept"]            # were they approved?
-context.favourable_classes = ["accept", "refer"]   # were they spared a decline?
+context.favourable_classes = ["accept"]  # were they approved?
+context.favourable_classes = ["accept", "refer"]  # were they spared a decline?
 ```
 
 `CounterfactualFlipCheck` measures the shift in P(favourable outcome), and
