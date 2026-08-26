@@ -9,7 +9,9 @@ import numpy as np
 from .._logging import get_logger
 from ..config import PerformanceConfig
 from ..core.base import BaseCheck, CheckResult
+from ..exceptions import GateConfigurationError
 from ..metrics import ResolvedMetric, resolve_metric, to_hard_labels, validate_metric
+from ..task import resolve_task
 
 logger = get_logger("performance")
 
@@ -36,16 +38,18 @@ class PerformanceThresholdCheck(BaseCheck):
         # Fail at construction time on a typo'd metric name, rather than
         # partway through a gate run. Dependency availability is checked
         # lazily in _score(), so building the suite never needs sklearn.
+        # Task is unknown at construction time, so only the name is checked
+        # here; metric/task compatibility is verified in run().
         validate_metric(self.config.metric)
 
-    def _score(self, y_true: Any, y_pred: Any) -> tuple[ResolvedMetric, float]:
+    def _score(self, y_true: Any, y_pred: Any, task: str) -> tuple[ResolvedMetric, float]:
         """Scores the model with the configured metric.
 
         Raises GateConfigurationError if an explicitly requested metric
         isn't available; ModelGate turns that into a blocking CHECK_ERROR
         so the pipeline stops rather than proceeding on a substituted score.
         """
-        metric = resolve_metric(self.config.metric)
+        metric = resolve_metric(self.config.metric, task)
         y_pred_eval = (
             to_hard_labels(y_pred, self.config.decision_threshold)
             if metric.needs_hard_labels
@@ -53,8 +57,29 @@ class PerformanceThresholdCheck(BaseCheck):
         )
         return metric, float(metric.fn(y_true, y_pred_eval))
 
-    def _score_result(self, context) -> CheckResult:
-        metric, score = self._score(context.y_true, context.y_pred)
+    def _threshold_for(self, metric: ResolvedMetric) -> tuple[float, str, bool]:
+        """Picks the threshold that matches the metric's direction.
+
+        Returns (threshold, config field name, passed-comparison-is-`>=`).
+        An error metric with no `max_error` set is a configuration error, not
+        a silent pass: the whole point of the gate is the comparison.
+        """
+        if metric.greater_is_better:
+            return self.config.min_score, "min_score", True
+        if self.config.max_error is None:
+            raise GateConfigurationError(
+                f"performance.metric={metric.name!r} is an error metric (lower is "
+                "better), so it is gated with performance.max_error — which is unset. "
+                "There is no sensible default: a ceiling depends on the scale of your "
+                "target. Set max_error, or choose a higher-is-better metric such as 'r2'."
+            )
+        return self.config.max_error, "max_error", False
+
+    def _score_result(self, context, task: str) -> CheckResult:
+        metric, score = self._score(context.y_true, context.y_pred, task)
+        threshold, threshold_field, higher_passes = self._threshold_for(metric)
+        passed = score >= threshold if higher_passes else score <= threshold
+        bound = "min" if higher_passes else "max"
 
         notes = []
         if metric.is_fallback:
@@ -64,33 +89,37 @@ class PerformanceThresholdCheck(BaseCheck):
         suffix = f" [{'; '.join(notes)}]" if notes else ""
 
         logger.debug(
-            "scored with metric=%s value=%.4f threshold=%s fallback=%s",
+            "scored with metric=%s value=%.4f %s=%s fallback=%s",
             metric.name,
             score,
-            self.config.min_score,
+            threshold_field,
+            threshold,
             metric.is_fallback,
         )
 
         return CheckResult(
             self.name,
             self.category,
-            "OK" if score >= self.config.min_score else "PERFORMANCE_RISK",
-            detail=f"{metric.name}={score:.4f} (min {self.config.min_score}){suffix}",
+            "OK" if passed else "PERFORMANCE_RISK",
+            detail=f"{metric.name}={score:.4f} ({bound} {threshold}){suffix}",
             blocking=self.blocking,
             metadata={
                 "metric_kind": "score",
                 "metric": metric.name,
                 "value": round(score, 4),
-                "threshold": self.config.min_score,
+                "threshold": threshold,
+                "threshold_field": threshold_field,
+                "greater_is_better": metric.greater_is_better,
                 "metric_is_fallback": metric.is_fallback,
             },
         )
 
     def run(self, context) -> list[CheckResult]:
         results = []
+        task = resolve_task(context)
 
         if context.y_true is not None and context.y_pred is not None:
-            results.append(self._score_result(context))
+            results.append(self._score_result(context, task))
 
         if context.latencies_ms is not None:
             p95 = float(np.percentile(context.latencies_ms, 95))

@@ -33,6 +33,8 @@ import pandas as pd
 from ._logging import configure_logging, get_logger
 from .exceptions import BDPModelGateError
 from .metrics import AUTO, BUILTIN_METRICS
+from .task import ALL_TASKS
+from .task import AUTO as TASK_AUTO
 
 logger = get_logger("cli")
 
@@ -50,9 +52,25 @@ def _load_model(path: str):
     return joblib.load(path)
 
 
-def _predict(model, X: pd.DataFrame):
-    if hasattr(model, "predict_proba"):
-        return model.predict_proba(X)[:, 1]
+def _predict(model, X: pd.DataFrame, task: str):
+    """Produces y_pred appropriate to the task.
+
+    Only *binary* classification wants `predict_proba(X)[:, 1]`. Taking
+    column 1 of a multiclass model's probabilities silently yields P(class 1)
+    — a real number that scores as though it were the positive class, which
+    is how a gate reports a confident, meaningless verdict. Regression has no
+    predict_proba at all.
+    """
+    wants_proba = task in (TASK_AUTO, "binary")
+    if wants_proba and hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)
+        if proba.ndim == 2 and proba.shape[1] == 2:
+            return proba[:, 1]
+        logger.info(
+            "model.predict_proba returned %d columns, so it is not binary — using "
+            ".predict() instead. Pass --task to be explicit.",
+            proba.shape[1] if proba.ndim == 2 else 1,
+        )
     return model.predict(X)
 
 
@@ -108,6 +126,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cost-per-inference", type=float, help="Estimated cost per inference")
     parser.add_argument(
+        "--task",
+        choices=[TASK_AUTO, *ALL_TASKS],
+        default=TASK_AUTO,
+        help=(
+            "Prediction task (default: auto, which infers from the target column and "
+            "logs what it inferred). Set explicitly for anything you gate on — a count "
+            "target such as claims frequency looks identical to a multiclass one."
+        ),
+    )
+    parser.add_argument(
+        "--expected-loss-col",
+        help=(
+            "Column in --data holding a per-row expected loss or technical premium. "
+            "Enables the loss-ratio parity fairness check for regression models."
+        ),
+    )
+    parser.add_argument(
         "--metric",
         choices=[AUTO, *sorted(BUILTIN_METRICS)],
         help=(
@@ -119,7 +154,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-score",
         type=float,
-        help="Minimum acceptable value of --metric; below this the gate blocks",
+        help=(
+            "Minimum acceptable value of --metric, for higher-is-better metrics "
+            "(roc_auc, f1, r2, ...); below this the gate blocks"
+        ),
+    )
+    parser.add_argument(
+        "--max-error",
+        type=float,
+        help=(
+            "Maximum acceptable value of --metric, for error metrics where lower is "
+            "better (rmse, mae, mape, poisson_deviance); above this the gate blocks. "
+            "Required when one of those metrics is selected — there is no default, "
+            "since a sensible ceiling depends on the scale of your target."
+        ),
     )
     parser.add_argument(
         "--decision-threshold",
@@ -169,6 +217,7 @@ def _apply_cli_overrides(gate_config, args):
     for flag_name, config_field in (
         ("metric", "metric"),
         ("min_score", "min_score"),
+        ("max_error", "max_error"),
         ("decision_threshold", "decision_threshold"),
     ):
         value = getattr(args, flag_name, None)
@@ -190,8 +239,19 @@ def main(argv=None) -> int:
         model = _load_model(args.model)
         df = pd.read_csv(args.data)
         y_true = df[args.target_col].values
-        X = df.drop(columns=[args.target_col])
-        y_pred = _predict(model, X)
+        drop_cols = [args.target_col]
+
+        expected_loss = None
+        if args.expected_loss_col:
+            if args.expected_loss_col not in df.columns:
+                raise BDPModelGateError(
+                    f"--expected-loss-col {args.expected_loss_col!r} is not a column in {args.data}"
+                )
+            expected_loss = df[args.expected_loss_col].to_numpy()
+            drop_cols.append(args.expected_loss_col)
+
+        X = df.drop(columns=drop_cols)
+        y_pred = _predict(model, X, args.task)
 
         protected_df = pd.read_csv(args.protected) if args.protected else None
         model_card = json.load(open(args.model_card)) if args.model_card else None
@@ -216,6 +276,8 @@ def main(argv=None) -> int:
             latencies_ms=latencies_ms,
             cost_per_inference=args.cost_per_inference,
             model_card=model_card,
+            expected_loss=expected_loss,
+            task=args.task,
         )
 
         report = ModelGate(checks=default_structured_checks(gate_config)).run(context)

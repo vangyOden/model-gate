@@ -9,9 +9,10 @@ compliance, and security checks, run as a single gate that gives you a
 `PASS` / `NEEDS_REVIEW` / `BLOCKED` status to wire into CI before a model
 is promoted to production.
 
-Currently covers **structured data models**. Unstructured (text, image,
-audio) support is planned — see `bdp_model_gate.unstructured` for the reserved
-interface and roadmap notes.
+Covers **structured data models** for **binary classification and
+regression**. Multiclass is next (see [Roadmap](#roadmap)). Unstructured
+(text, image, audio) support is planned — see `bdp_model_gate.unstructured`
+for the reserved interface.
 
 ## Install
 
@@ -77,6 +78,12 @@ flags need human judgment)
 - `DisparateImpactCheck` — outcome-level demographic parity
 - `ShapSubgroupCheck` — features whose SHAP contribution differs across groups
 - `CounterfactualFlipCheck` — prediction shift when a protected attribute is flipped
+
+**Fairness — regression** (non-blocking; see [Regression models](#regression-models))
+- `LossRatioParityCheck` — margin charged over each group's own expected loss
+- `GroupMeanGapCheck` — raw spread in mean prediction across groups
+- `ErrorParityCheck` — is the model materially worse for one group?
+- `CalibrationParityCheck` — systematic over- or under-prediction per group
 
 **Performance** (blocking)
 - `PerformanceThresholdCheck` — model score on a metric you choose, p95
@@ -299,8 +306,92 @@ least two classes, `protected_df` is row-aligned and has no all-NaN
 columns, `model_card` is a dict, `generate_fn` is callable, and
 `latencies_ms` has no negative values.
 
+## Regression models
+
+Set `task` and the suite reconfigures itself. Classification-only checks
+report `NOT_APPLICABLE` rather than being dropped, so the report still shows
+what was skipped and why.
+
+```python
+from bdp_model_gate import GateConfig, ModelGate, StructuredGateContext
+
+context = StructuredGateContext(
+    model=pricing_model,
+    X=X_val,
+    y_true=realised_loss,
+    y_pred=quoted_premium,
+    protected_df=protected_val,
+    expected_loss=technical_premium,  # enables loss-ratio parity
+    task="regression",
+)
+
+config = GateConfig()
+config.performance.metric = "rmse"
+config.performance.max_error = 5000.0  # error metrics use max_error
+```
+
+`task` defaults to `"auto"`, which infers from `y_true` and **logs what it
+inferred**. Set it explicitly for anything you gate on: a claims-frequency
+target of 0/1/2/3 is indistinguishable from a four-class problem by shape.
+
+**Metrics.** `rmse`, `mae`, `mape`, `poisson_deviance` (for count targets
+like claims frequency) and `r2`. All are implemented in numpy, so they work
+on a core install. `"auto"` picks `r2`, because an RMSE default threshold
+would be meaningless without knowing whether the target is naira or claims.
+
+**Thresholds have a direction.** Higher-is-better metrics use `min_score`;
+error metrics use `max_error`. There is no default `max_error` — a ceiling
+depends entirely on your target's scale — so configuring an error metric
+without one raises `GateConfigurationError` instead of passing silently.
+
+### Fairness without a "selected" class
+
+Demographic parity counts a favourable class, which a continuous target does
+not have. Four checks replace it, and the distinction matters most in
+insurance:
+
+| Check | Question | Needs |
+|---|---|---|
+| `LossRatioParityCheck` | Is one group charged a higher **margin over its own expected loss**? | `expected_loss` |
+| `GroupMeanGapCheck` | Does one group get systematically higher predictions? | — |
+| `ErrorParityCheck` | Is the model materially less accurate for one group? | `y_true` |
+| `CalibrationParityCheck` | Does one group's prediction over- or under-shoot reality? | `y_true` |
+
+A pricing model *should* charge more in a higher-loss segment — that is
+risk-based pricing, not discrimination — so `GroupMeanGapCheck` on its own
+flags legitimate rating differences and will be noisy. `LossRatioParityCheck`
+is the one that isolates unfairness from actuarially justified variation, by
+comparing the **margin** each group is charged over its own expected cost.
+It needs `context.expected_loss` (a per-row expected loss, technical premium
+or pure premium) and reports `NOT_APPLICABLE` without it rather than
+silently answering the raw-price question under the same name.
+
+All four gaps are measured relative to the overall figure, so one threshold
+works across scales, and groups smaller than `FairnessConfig.min_group_size`
+(default 30) are reported but not scored — a three-policy segment otherwise
+produces a wild ratio that reads as a finding.
+
+Adversarial robustness also changes shape: a "prediction flip" is
+meaningless for a continuous output (every perturbation moves it), so
+regression measures the mean relative prediction shift against
+`SecurityConfig.adversarial_max_relative_shift`.
+
+From the CLI:
+
+```bash
+bdp-model-gate --model pricing.joblib --data validation.csv \
+  --target-col realised_loss --task regression \
+  --expected-loss-col technical_premium \
+  --metric rmse --max-error 5000 --output gate_report.json
+```
+
 ## Roadmap
 
+- **Multiclass support (0.4.0)** — averaged metrics, a configurable
+  favourable class for demographic parity, and ordinal awareness for
+  underwriting decisions (accept / refer / decline), where a
+  decline-vs-accept error is worse than refer-vs-accept.
+- Example notebooks for both (0.4.1).
 - Unstructured data support (text/image/audio) — `bdp_model_gate.unstructured` reserves
   the shape (`UnstructuredGateContext`, a matching check suite) but raises
   `NotImplementedError` until it lands.

@@ -35,6 +35,17 @@ class StructuredGateContext:
         generate_fn: callable(str) -> str, the entry point of any generative
             component sitting alongside the structured model, for prompt
             injection testing.
+        expected_loss: Per-row expected loss (or technical/pure premium),
+            row-aligned to X. Enables `LossRatioParityCheck`, which asks
+            whether one group is charged a higher margin over its own
+            expected cost — the actuarially meaningful fairness question for
+            a pricing model, since risk-based premium differences are not by
+            themselves discriminatory.
+        task: "auto" (default), "binary", "multiclass" or "regression".
+            "auto" infers from y_true and logs what it inferred. Set it
+            explicitly for anything you gate on: a claims-frequency target of
+            0/1/2/3 is indistinguishable from a four-class problem by shape.
+            See `bdp_model_gate.task`.
     """
 
     model: Any
@@ -46,4 +57,6 @@ class StructuredGateContext:
     cost_per_inference: float | None = None
     model_card: dict | None = None
     generate_fn: Callable[[str], str] | None = None
+    expected_loss: Sequence[float] | None = None
     modality: str = "structured"
+    task: str = "auto"

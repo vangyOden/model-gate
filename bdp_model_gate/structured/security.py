@@ -6,14 +6,33 @@ import re
 
 import numpy as np
 
+from .._logging import get_logger
 from ..config import SecurityConfig
 from ..core.base import BaseCheck, CheckResult
+from ..task import REGRESSION, resolve_task
+
+logger = get_logger("security")
+
+#: Below this magnitude a prediction is treated as ~0 for the purposes of a
+#: relative-shift denominator, and the batch mean is used instead.
+_REL_SHIFT_FLOOR = 1e-9
 
 
 class AdversarialRobustnessCheck(BaseCheck):
     """Black-box robustness check: perturbs numeric features by a small
-    relative amount and measures how often the predicted class flips.
-    A high flip rate indicates a fragile decision boundary."""
+    relative amount and measures how much the prediction moves.
+
+    For classification that is the **class flip rate** — how often the
+    predicted label changes — and a high rate means a fragile decision
+    boundary.
+
+    For regression there is no such thing as a flip: every perturbation moves
+    a continuous output, so a flip rate would be ~1.0 and every model would
+    be permanently BLOCKED. Sensitivity is measured instead as the mean
+    *relative* change in prediction, gated with
+    `SecurityConfig.adversarial_max_relative_shift`. A model whose output
+    moves 30% when an input moves 2% is over-sensitive regardless of task.
+    """
 
     name = "adversarial_robustness"
     category = "security"
@@ -70,6 +89,7 @@ class AdversarialRobustnessCheck(BaseCheck):
                 )
             ]
 
+        task = resolve_task(context)
         sample = X.sample(min(self.n_samples, len(X)), random_state=self.random_state).copy()
         base_preds = context.model.predict(sample)
 
@@ -77,16 +97,38 @@ class AdversarialRobustnessCheck(BaseCheck):
         method = "gradient-directed" if direction is not None else "random"
 
         flips = np.zeros(len(sample), dtype=bool)
+        # Worst-case relative movement seen for each row across all
+        # perturbations, used for the regression verdict.
+        rel_shift = np.zeros(len(sample), dtype=float)
+
+        def record(new_preds) -> None:
+            flips[:] |= new_preds != base_preds
+            if task == REGRESSION:
+                base = np.asarray(base_preds, dtype=float)
+                moved = np.abs(np.asarray(new_preds, dtype=float) - base)
+                # Relative to the row's own prediction, falling back to the
+                # batch mean where a prediction is ~0 and a ratio would blow up.
+                scale_ref = np.where(
+                    np.abs(base) > _REL_SHIFT_FLOOR,
+                    np.abs(base),
+                    max(float(np.mean(np.abs(base))), _REL_SHIFT_FLOOR),
+                )
+                np.maximum(rel_shift, moved / scale_ref, out=rel_shift)
+
         if direction is not None:
             # Perturb every numeric feature at once, along the direction that
             # most increases the linear decision score — a targeted attack
             # rather than one feature at a time.
             perturbed = sample.copy()
-            scale = perturbed[numeric_cols].abs().mean().mean() * self.config.adversarial_epsilon
             for col in numeric_cols:
-                perturbed[col] = perturbed[col] + direction[X.columns.get_loc(col)] * scale
-            new_preds = context.model.predict(perturbed)
-            flips |= new_preds != base_preds
+                # Scale each feature's step to that feature's own magnitude.
+                # A single scale derived from the mean across all columns is
+                # dominated by the largest one, so a sum-insured column in the
+                # millions would shove a 0-10 risk score by thousands — not the
+                # "small relative perturbation" this check is meant to apply.
+                col_scale = float(perturbed[col].abs().mean()) * self.config.adversarial_epsilon
+                perturbed[col] = perturbed[col] + direction[X.columns.get_loc(col)] * col_scale
+            record(context.model.predict(perturbed))
         else:
             rng = np.random.default_rng(self.random_state)
             for col in numeric_cols:
@@ -97,8 +139,32 @@ class AdversarialRobustnessCheck(BaseCheck):
                     * rng.choice([-1, 1], size=len(perturbed))
                 )
                 perturbed[col] = perturbed[col] + noise
-                new_preds = context.model.predict(perturbed)
-                flips |= new_preds != base_preds
+                record(context.model.predict(perturbed))
+
+        if task == REGRESSION:
+            shift = float(np.mean(rel_shift))
+            threshold = self.config.adversarial_max_relative_shift
+            flag = "OK" if shift <= threshold else "ROBUSTNESS_RISK"
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    flag,
+                    detail=(
+                        f"mean relative prediction shift under {method} perturbation="
+                        f"{shift:.4f} (max {threshold}); inputs moved by "
+                        f"epsilon={self.config.adversarial_epsilon}"
+                    ),
+                    blocking=self.blocking,
+                    metadata={
+                        "relative_shift": round(shift, 4),
+                        "threshold": threshold,
+                        "method": method,
+                        "task": task,
+                        "epsilon": self.config.adversarial_epsilon,
+                    },
+                )
+            ]
 
         flip_rate = float(flips.mean())
         flag = (
@@ -116,6 +182,7 @@ class AdversarialRobustnessCheck(BaseCheck):
                     "flip_rate": round(flip_rate, 4),
                     "threshold": self.config.adversarial_flip_rate_threshold,
                     "method": method,
+                    "task": task,
                 },
             )
         ]

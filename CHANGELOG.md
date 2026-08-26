@@ -6,6 +6,98 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-26
+
+Regression support, and the task abstraction it needed. Multiclass follows
+in 0.4.0; example notebooks in 0.4.1.
+
+### Added
+- **Prediction tasks.** `StructuredGateContext.task` accepts `"auto"`
+  (default), `"binary"`, `"multiclass"` or `"regression"`. `"auto"` infers
+  from `y_true` and **logs what it inferred** — inference is genuinely
+  ambiguous, since a claims-frequency target of 0/1/2/3 is indistinguishable
+  from a four-class problem by shape alone. Set it explicitly for anything
+  you gate on. New module `bdp_model_gate.task`.
+- **`BaseCheck.supported_tasks`.** Each check declares the tasks it can
+  meaningfully run against; `ModelGate` reports `NOT_APPLICABLE` for the
+  rest instead of letting them produce a confident, meaningless number. It
+  defaults to every task, so plugins written before 0.3.0 keep working.
+- **Regression metrics:** `rmse`, `mae`, `mape`, `poisson_deviance`
+  (for claims-frequency counts) and `r2`. All are implemented in numpy, so
+  they work on a core install and are unaffected by scikit-learn's churn
+  around `mean_squared_error(squared=False)`. `metric="auto"` resolves to
+  `r2` for regression — an RMSE default would mean nothing without knowing
+  whether the target is naira premiums or claim counts.
+- **`PerformanceConfig.max_error`.** Error metrics are lower-is-better, so
+  they are gated with `max_error` while higher-is-better metrics keep using
+  `min_score`; each metric declares its own direction and the report names
+  which comparison ran. `max_error` has no default, and configuring an error
+  metric without it raises `GateConfigurationError` rather than passing
+  silently — the comparison is the entire point of the gate.
+- **Four regression fairness checks** in
+  `bdp_model_gate.structured.regression_fairness`, each answering something
+  the others cannot:
+  - `LossRatioParityCheck` — is one group charged a higher **margin over its
+    own expected loss**? The actuarially meaningful test for a pricing model:
+    charging more in a higher-loss segment is risk-based pricing, charging a
+    higher margin is not justified by cost. Needs the new
+    `context.expected_loss`.
+  - `GroupMeanGapCheck` — raw spread in mean prediction across groups.
+  - `ErrorParityCheck` — is the model materially worse for one group?
+  - `CalibrationParityCheck` — does one group's prediction systematically
+    over- or under-shoot its realised outcome?
+
+  All are relative to the overall figure, so one threshold works for naira
+  premiums and claim counts alike, and groups below
+  `FairnessConfig.min_group_size` (default 30) are reported but not scored.
+- `StructuredGateContext.expected_loss` — per-row expected loss or technical
+  premium, row-aligned to `X`.
+- `GateReport.task`, in `summary()` and the JSON report: a report read months
+  later must state what it assumed the model was.
+- CLI `--task`, `--expected-loss-col` and `--max-error`.
+- `tests/test_regression.py` — 31 tests covering task inference, metric
+  direction, all four fairness notions and the validation rules.
+
+### Fixed
+- **The CLI silently mis-scored non-binary models.** `_predict` always took
+  `predict_proba(X)[:, 1]`, which for a three-class underwriting model is
+  just P(class 1) scored as though it were the positive class. It now picks
+  a task-appropriate prediction and logs when it declines the probability
+  path.
+- **`AdversarialRobustnessCheck` would have blocked every regression model.**
+  It measured a class flip rate, and any perturbation moves a continuous
+  output, so the rate was ~1.0 by construction. Regression now measures the
+  mean relative prediction shift against
+  `SecurityConfig.adversarial_max_relative_shift`.
+- Regression targets are now validated as numeric and finite, with an error
+  message that points at `context.task` when the target looks categorical.
+- **`AdversarialRobustnessCheck` perturbed features off a single global
+  scale.** The gradient-directed path derived one step size from the mean
+  magnitude across *all* numeric columns, so the largest column dominated:
+  with a sum-insured column in the millions beside a 0–10 risk score, the
+  risk score was shoved by thousands. That is not the "small relative
+  perturbation" the check documents. Each feature is now stepped relative to
+  its own magnitude, matching what the random path already did. Present
+  since 0.1.0; it inflated flip rates for classification too, but only
+  became glaring on regression, where it reported a relative prediction
+  shift of ~1448 and blocked a perfectly stable linear model.
+- **`ShapSubgroupCheck` hard-blocked on models exposing only `.predict()`.**
+  shap's generic `Explainer` wants a callable or an estimator it recognises,
+  but this library's own validation requires nothing more than `.predict()`.
+  Such a model raised, and `ModelGate` converts an exception into a
+  *blocking* `CHECK_ERROR` — so a non-blocking fairness check could stop a
+  deploy. It now falls back to explaining `model.predict` (the documented
+  black-box pattern) and, if shap still cannot cope, reports
+  `NOT_APPLICABLE` instead of raising.
+
+### Changed
+- `DisparateImpactCheck` and `CounterfactualFlipCheck` are classification-
+  only and report `NOT_APPLICABLE` for regression; the regression suite
+  covers that ground instead.
+- `AUTO_PREFERENCE` is superseded by `AUTO_PREFERENCE_BY_TASK`. The old name
+  remains as an alias for the binary order.
+
+
 ### Changed
 - Install instructions now point at PyPI. The package is published at
   <https://pypi.org/project/bdp-model-gate/>, so the TestPyPI
@@ -171,7 +263,8 @@ All notable changes to this project are documented here. Format follows
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vanjy-eng/model-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vanjy-eng/model-gate/releases/tag/v0.1.0

@@ -24,8 +24,11 @@ def _perf_context(synthetic_data, **kwargs):
 # --- metric selection -------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", sorted(BUILTIN_METRICS))
-def test_every_builtin_metric_runs(synthetic_data, name):
+CLASSIFICATION_METRICS = sorted(m for m, s in BUILTIN_METRICS.items() if "binary" in s.tasks)
+
+
+@pytest.mark.parametrize("name", CLASSIFICATION_METRICS)
+def test_every_builtin_classification_metric_runs(synthetic_data, name):
     pytest.importorskip("sklearn", reason="most builtin metrics need scikit-learn")
     config = PerformanceConfig(metric=name, min_score=0.0)
     results = PerformanceThresholdCheck(config).run(_perf_context(synthetic_data))

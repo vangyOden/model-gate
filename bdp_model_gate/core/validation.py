@@ -17,15 +17,18 @@ import numpy as np
 import pandas as pd
 
 from ..exceptions import GateValidationError
+from ..task import REGRESSION, resolve_task, validate_task
 
 if TYPE_CHECKING:
     from .context import StructuredGateContext
 
 
 def validate_structured_context(context: StructuredGateContext) -> None:
+    _validate_task(context)
     _validate_model(context)
     _validate_features(context)
     _validate_labels(context)
+    _validate_expected_loss(context)
     _validate_protected_df(context)
     _validate_model_card(context)
     _validate_performance_inputs(context)
@@ -65,13 +68,60 @@ def _validate_labels(context: StructuredGateContext) -> None:
                 f"{n_rows} rows — they must be aligned"
             )
 
-    if context.y_true is not None:
-        unique_labels = pd.unique(np.asarray(context.y_true))
-        if len(unique_labels) < 2:
-            raise GateValidationError(
-                f"context.y_true has only one unique value ({unique_labels!r}) — "
-                "most checks (AUC, disparate impact) need at least two classes present"
-            )
+    if context.y_true is None:
+        return
+
+    task = resolve_task(context)
+    unique_labels = pd.unique(np.asarray(context.y_true))
+
+    if len(unique_labels) < 2:
+        detail = (
+            "a constant target has no variance to explain, so every regression metric is degenerate"
+            if task == REGRESSION
+            else "most checks (AUC, disparate impact) need at least two classes present"
+        )
+        raise GateValidationError(
+            f"context.y_true has only one unique value ({unique_labels!r}) — {detail}"
+        )
+
+    if task == REGRESSION:
+        for name, values in (("y_true", context.y_true), ("y_pred", context.y_pred)):
+            if values is None:
+                continue
+            arr = np.asarray(values)
+            if arr.dtype.kind not in "iuf":
+                raise GateValidationError(
+                    f"context.{name} must be numeric for a regression task, got dtype "
+                    f"{arr.dtype} — set context.task explicitly if this is really "
+                    "a classification problem"
+                )
+            if not np.all(np.isfinite(arr.astype(float))):
+                raise GateValidationError(
+                    f"context.{name} contains NaN or infinite values, which every "
+                    "regression metric would propagate"
+                )
+
+
+def _validate_task(context: StructuredGateContext) -> None:
+    validate_task(getattr(context, "task", "auto"))
+
+
+def _validate_expected_loss(context: StructuredGateContext) -> None:
+    expected_loss = getattr(context, "expected_loss", None)
+    if expected_loss is None:
+        return
+    arr = np.asarray(expected_loss)
+    if arr.dtype.kind not in "iuf":
+        raise GateValidationError(f"context.expected_loss must be numeric, got dtype {arr.dtype}")
+    if len(arr) != len(context.X):
+        raise GateValidationError(
+            f"context.expected_loss has length {len(arr)}, but context.X has "
+            f"{len(context.X)} rows — they must be row-aligned"
+        )
+    if np.any(np.asarray(arr, dtype=float) < 0):
+        raise GateValidationError(
+            "context.expected_loss contains negative values — an expected loss cannot be below zero"
+        )
 
 
 def _validate_protected_df(context: StructuredGateContext) -> None:
