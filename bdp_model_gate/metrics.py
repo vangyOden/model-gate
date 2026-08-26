@@ -27,14 +27,16 @@ the check binarizes at `PerformanceConfig.decision_threshold` when needed.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any, Callable, Union  # Union: runtime alias, can't use PEP 604 on 3.9
 
 import numpy as np
 
 from ._logging import get_logger
+from .classes import to_ranks
 from .exceptions import GateConfigurationError
-from .task import BINARY, CLASSIFICATION_TASKS, REGRESSION
+from .task import BINARY, CLASSIFICATION_TASKS, MULTICLASS, REGRESSION
 
 logger = get_logger("metrics")
 
@@ -57,6 +59,12 @@ class MetricSpec:
     greater_is_better: bool = True
     #: Which prediction tasks this metric can score.
     tasks: tuple[str, ...] = CLASSIFICATION_TASKS
+    #: True for metrics whose scikit-learn form needs an `average=` strategy
+    #: once there are more than two classes (f1, precision, recall).
+    needs_average: bool = False
+    #: True for metrics defined only on an ordinal scale, which therefore
+    #: require `context.class_order`.
+    needs_class_order: bool = False
 
 
 def _accuracy_numpy(y_true: Any, y_pred: Any) -> float:
@@ -117,6 +125,49 @@ def _mape_numpy(y_true: Any, y_pred: Any) -> float:
     return float(np.mean(np.abs((t[nonzero] - p[nonzero]) / t[nonzero])))
 
 
+def ordinal_mae(y_true: Any, y_pred: Any, class_order: Any) -> float:
+    """Mean absolute error in *rank* space.
+
+    The point of an ordinal metric: for accept/refer/decline, predicting
+    "decline" on an "accept" case is two steps wrong while "refer" is one.
+    Plain accuracy scores both as a single mistake, which is exactly the
+    distinction an underwriting gate needs to make.
+    """
+    t = to_ranks(y_true, class_order)
+    p = to_ranks(y_pred, class_order)
+    return float(np.mean(np.abs(t - p)))
+
+
+def quadratic_kappa(y_true: Any, y_pred: Any, class_order: Any) -> float:
+    """Cohen's kappa with quadratic weights — the standard ordinal agreement
+    measure. 1.0 is perfect, 0.0 is chance, and negative is worse than
+    chance. Disagreements are penalised by the *square* of their rank
+    distance, so a two-step error costs four times a one-step one.
+    """
+    t = to_ranks(y_true, class_order).astype(int)
+    p = to_ranks(y_pred, class_order).astype(int)
+    n_classes = len(list(class_order))
+
+    observed = np.zeros((n_classes, n_classes), dtype=float)
+    for actual, predicted in zip(t, p):
+        observed[actual, predicted] += 1
+
+    # Expected counts under independence of the two marginals.
+    actual_hist = np.bincount(t, minlength=n_classes).astype(float)
+    pred_hist = np.bincount(p, minlength=n_classes).astype(float)
+    expected = np.outer(actual_hist, pred_hist) / max(len(t), 1)
+
+    indices = np.arange(n_classes)
+    weights = (indices[:, None] - indices[None, :]) ** 2 / max((n_classes - 1) ** 2, 1)
+
+    denominator = float(np.sum(weights * expected))
+    if denominator == 0.0:
+        # Everything landed in one cell: perfect agreement, or no signal to
+        # disagree about. Either way there is no chance-correction to make.
+        return 1.0 if float(np.sum(weights * observed)) == 0.0 else 0.0
+    return 1.0 - float(np.sum(weights * observed)) / denominator
+
+
 def _poisson_deviance_numpy(y_true: Any, y_pred: Any) -> float:
     """Mean Poisson deviance — the right error measure for count targets such
     as claims frequency, where RMSE understates the cost of over-dispersion."""
@@ -136,9 +187,12 @@ def _poisson_deviance_numpy(y_true: Any, y_pred: Any) -> float:
 
 
 BUILTIN_METRICS: dict[str, MetricSpec] = {
-    "roc_auc": MetricSpec("roc_auc", "roc_auc_score", needs_hard_labels=False),
+    # Ranking metrics stay binary-only: their multiclass forms need a full
+    # (n, n_classes) probability matrix, which the y_pred contract does not
+    # carry. Use a label-based metric, or ordinal_mae / quadratic_kappa.
+    "roc_auc": MetricSpec("roc_auc", "roc_auc_score", needs_hard_labels=False, tasks=(BINARY,)),
     "average_precision": MetricSpec(
-        "average_precision", "average_precision_score", needs_hard_labels=False
+        "average_precision", "average_precision_score", needs_hard_labels=False, tasks=(BINARY,)
     ),
     "accuracy": MetricSpec(
         "accuracy", "accuracy_score", needs_hard_labels=True, fallback=_accuracy_numpy
@@ -146,9 +200,28 @@ BUILTIN_METRICS: dict[str, MetricSpec] = {
     "balanced_accuracy": MetricSpec(
         "balanced_accuracy", "balanced_accuracy_score", needs_hard_labels=True
     ),
-    "f1": MetricSpec("f1", "f1_score", needs_hard_labels=True),
-    "precision": MetricSpec("precision", "precision_score", needs_hard_labels=True),
-    "recall": MetricSpec("recall", "recall_score", needs_hard_labels=True),
+    "f1": MetricSpec("f1", "f1_score", needs_hard_labels=True, needs_average=True),
+    "precision": MetricSpec(
+        "precision", "precision_score", needs_hard_labels=True, needs_average=True
+    ),
+    "recall": MetricSpec("recall", "recall_score", needs_hard_labels=True, needs_average=True),
+    # Ordinal. Both need context.class_order and are numpy-native.
+    "ordinal_mae": MetricSpec(
+        "ordinal_mae",
+        "",
+        needs_hard_labels=True,
+        greater_is_better=False,
+        tasks=(MULTICLASS,),
+        needs_class_order=True,
+    ),
+    "quadratic_kappa": MetricSpec(
+        "quadratic_kappa",
+        "",
+        needs_hard_labels=True,
+        greater_is_better=True,
+        tasks=(MULTICLASS,),
+        needs_class_order=True,
+    ),
     # Regression. All have numpy implementations, so they work on a core
     # install; scikit-learn is used when present for the ones it defines.
     "rmse": MetricSpec(
@@ -200,6 +273,10 @@ BUILTIN_METRICS: dict[str, MetricSpec] = {
 #: knowing whether the target is premiums in naira or claim counts.
 AUTO_PREFERENCE_BY_TASK: dict[str, tuple[str, ...]] = {
     BINARY: ("roc_auc", "accuracy"),
+    # balanced_accuracy, not plain accuracy: underwriting and fraud classes
+    # are usually skewed, and accuracy flatters a model that never predicts
+    # the rare class. Falls back to accuracy on a core install.
+    MULTICLASS: ("balanced_accuracy", "accuracy"),
     REGRESSION: ("r2",),
 }
 
@@ -255,7 +332,15 @@ def validate_metric(metric: MetricSetting, task: str | None = None) -> None:
         )
 
 
-def _load_sklearn_metric(spec: MetricSpec) -> MetricFn | None:
+#: Numpy-native metrics that take extra bound arguments rather than being
+#: resolved from scikit-learn.
+_ORDINAL_IMPLS: dict[str, Callable[..., float]] = {}
+
+
+def _load_sklearn_metric(spec: MetricSpec) -> Callable[..., float] | None:
+    # Returns Callable[..., float] rather than MetricFn: scikit-learn's
+    # metrics accept extra keyword arguments such as `average`, which the
+    # two-positional-argument MetricFn alias cannot express.
     try:
         from sklearn import metrics as sk_metrics
     except ImportError:
@@ -263,7 +348,12 @@ def _load_sklearn_metric(spec: MetricSpec) -> MetricFn | None:
     return getattr(sk_metrics, spec.sklearn_fn, None)
 
 
-def resolve_metric(metric: MetricSetting, task: str = BINARY) -> ResolvedMetric:
+def resolve_metric(
+    metric: MetricSetting,
+    task: str = BINARY,
+    average: str = "macro",
+    class_order: Any = None,
+) -> ResolvedMetric:
     """Turns a config value into a callable metric.
 
     Raises GateConfigurationError if an explicitly named metric can't be
@@ -283,7 +373,28 @@ def resolve_metric(metric: MetricSetting, task: str = BINARY) -> ResolvedMetric:
         return _resolve_auto(task)
 
     spec = BUILTIN_METRICS[metric]
+
+    if spec.needs_class_order:
+        if class_order is None:
+            raise GateConfigurationError(
+                f"performance.metric={metric!r} is an ordinal metric and needs "
+                "context.class_order — the ordered class labels, least to most "
+                'favourable, e.g. ["decline", "refer", "accept"]. Without an ordering '
+                "there is no notion of how wrong a prediction is."
+            )
+        return ResolvedMetric(
+            spec.name,
+            functools.partial(_ORDINAL_IMPLS[spec.name], class_order=class_order),
+            spec.needs_hard_labels,
+            spec.greater_is_better,
+        )
+
     fn = _load_sklearn_metric(spec)
+    if fn is not None and spec.needs_average and task == MULTICLASS:
+        # f1/precision/recall default to average="binary", which raises on a
+        # multiclass target. macro weights every class equally, so a rarely
+        # predicted "decline" counts as much as a common "accept".
+        fn = functools.partial(fn, average=average)
     if fn is not None:
         return ResolvedMetric(spec.name, fn, spec.needs_hard_labels, spec.greater_is_better)
     if spec.fallback is not None:
@@ -346,6 +457,38 @@ def _resolve_auto(task: str = BINARY) -> ResolvedMetric:
     )
 
 
+def to_class_labels(y_pred: Any, class_order: Any = None) -> Any:
+    """Reduces multiclass predictions to one label per row.
+
+    Accepts predicted labels as-is. An (n, n_classes) probability matrix is
+    reduced by argmax, mapped back through `class_order` when it is known so
+    the result is comparable with `y_true` rather than a bare column index.
+    """
+    arr = np.asarray(y_pred)
+    if arr.ndim == 1:
+        return arr
+    if arr.ndim != 2:
+        raise GateConfigurationError(
+            f"y_pred has {arr.ndim} dimensions; expected labels or an "
+            "(n_rows, n_classes) probability matrix"
+        )
+    indices = np.argmax(arr, axis=1)
+    if class_order is None:
+        logger.warning(
+            "y_pred looks like a probability matrix but context.class_order is unset — "
+            "using column indices as class labels, which will not match y_true unless "
+            "your classes are 0..k-1"
+        )
+        return indices
+    ordered = list(class_order)
+    if arr.shape[1] != len(ordered):
+        raise GateConfigurationError(
+            f"y_pred has {arr.shape[1]} columns but context.class_order lists "
+            f"{len(ordered)} classes"
+        )
+    return np.array([ordered[i] for i in indices])
+
+
 def to_hard_labels(y_pred: Any, threshold: float) -> Any:
     """Binarizes continuous scores for a metric that needs class labels.
 
@@ -361,6 +504,9 @@ def to_hard_labels(y_pred: Any, threshold: float) -> Any:
     return (arr >= threshold).astype(int)
 
 
+_ORDINAL_IMPLS.update({"ordinal_mae": ordinal_mae, "quadratic_kappa": quadratic_kappa})
+
+
 __all__ = [
     "AUTO",
     "AUTO_PREFERENCE",
@@ -371,6 +517,9 @@ __all__ = [
     "MetricSpec",
     "ResolvedMetric",
     "resolve_metric",
+    "ordinal_mae",
+    "quadratic_kappa",
+    "to_class_labels",
     "to_hard_labels",
     "validate_metric",
 ]

@@ -58,6 +58,17 @@ class StructuredGateContext:
             aligned to `X.columns`. Lets a differentiable model drive a real
             targeted attack in `AdversarialRobustnessCheck` instead of the
             random-noise fallback.
+        class_order: For multiclass problems, the class labels in ascending
+            order of favourability, e.g. ["decline", "refer", "accept"].
+            Supplying it marks the problem as **ordinal**, unlocking metrics
+            that know a decline-vs-accept error costs more than a
+            refer-vs-accept one. Omit it for a nominal problem where no
+            ordering exists.
+        favourable_classes: Which outcomes count as a positive result for
+            demographic parity. Defaults to the most favourable class when
+            `class_order` is given (and says so in the log); without either,
+            the multiclass parity check reports NOT_APPLICABLE rather than
+            picking one arbitrarily.
         task: "auto" (default), "binary", "multiclass" or "regression".
             "auto" infers from y_true and logs what it inferred. Set it
             explicitly for anything you gate on: a claims-frequency target of
@@ -81,5 +92,7 @@ class StructuredGateContext:
     predict_fn: Callable[[pd.DataFrame], Any] | None = None
     predict_proba_fn: Callable[[pd.DataFrame], Any] | None = None
     gradient_fn: Callable[[pd.DataFrame], Any] | None = None
+    class_order: Sequence[Any] | None = None
+    favourable_classes: Sequence[Any] | None = None
     modality: str = "structured"
     task: str = "auto"

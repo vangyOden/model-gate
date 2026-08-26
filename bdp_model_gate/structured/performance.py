@@ -10,8 +10,14 @@ from .._logging import get_logger
 from ..config import PerformanceConfig
 from ..core.base import BaseCheck, CheckResult
 from ..exceptions import GateConfigurationError
-from ..metrics import ResolvedMetric, resolve_metric, to_hard_labels, validate_metric
-from ..task import resolve_task
+from ..metrics import (
+    ResolvedMetric,
+    resolve_metric,
+    to_class_labels,
+    to_hard_labels,
+    validate_metric,
+)
+from ..task import MULTICLASS, resolve_task
 
 logger = get_logger("performance")
 
@@ -40,6 +46,7 @@ class PerformanceThresholdCheck(BaseCheck):
         # lazily in _score(), so building the suite never needs sklearn.
         # Task is unknown at construction time, so only the name is checked
         # here; metric/task compatibility is verified in run().
+        self._context = None
         validate_metric(self.config.metric)
 
     def _score(self, y_true: Any, y_pred: Any, task: str) -> tuple[ResolvedMetric, float]:
@@ -49,12 +56,20 @@ class PerformanceThresholdCheck(BaseCheck):
         isn't available; ModelGate turns that into a blocking CHECK_ERROR
         so the pipeline stops rather than proceeding on a substituted score.
         """
-        metric = resolve_metric(self.config.metric, task)
-        y_pred_eval = (
-            to_hard_labels(y_pred, self.config.decision_threshold)
-            if metric.needs_hard_labels
-            else y_pred
+        metric = resolve_metric(
+            self.config.metric,
+            task,
+            average=self.config.average,
+            class_order=getattr(self._context, "class_order", None),
         )
+        if not metric.needs_hard_labels:
+            y_pred_eval = y_pred
+        elif task == MULTICLASS:
+            # Binarising at a 0.5 threshold is meaningless with more than two
+            # classes; reduce a probability matrix by argmax instead.
+            y_pred_eval = to_class_labels(y_pred, getattr(self._context, "class_order", None))
+        else:
+            y_pred_eval = to_hard_labels(y_pred, self.config.decision_threshold)
         return metric, float(metric.fn(y_true, y_pred_eval))
 
     def _threshold_for(self, metric: ResolvedMetric) -> tuple[float, str, bool]:
@@ -116,6 +131,9 @@ class PerformanceThresholdCheck(BaseCheck):
 
     def run(self, context) -> list[CheckResult]:
         results = []
+        # Stashed so _score can reach class_order without threading the whole
+        # context through every helper.
+        self._context = context
         task = resolve_task(context)
 
         if context.y_true is not None and context.y_pred is not None:

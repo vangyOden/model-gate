@@ -333,10 +333,19 @@ def test_cli_flags_win_over_config_file(cli_fixtures):
             cli_fixtures["output"],
         ]
     )
-    assert exit_code in (0, 2)  # performance no longer blocks
+    # This test is about precedence, not the verdict: other checks may flag
+    # on this fixture, so assert on what the config actually produced.
+    assert exit_code in (0, 1, 2)
 
     report = json.loads(Path(cli_fixtures["output"]).read_text())
-    assert report["model_metric"] == "accuracy"
+    assert report["model_metric"] == "accuracy"  # from the config file
+    performance = [
+        r
+        for r in report["results_by_category"]["performance"]
+        if r["metadata"].get("metric_kind") == "score"
+    ]
+    assert performance[0]["metadata"]["threshold"] == 0.0  # from the CLI flag, not 1.5
+    assert performance[0]["flag"] == "OK"
 
 
 def test_cli_deprecated_config_key_is_logged(cli_fixtures, caplog):

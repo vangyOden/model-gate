@@ -7,6 +7,7 @@ import re
 import numpy as np
 
 from .._logging import get_logger
+from ..classes import to_ranks
 from ..config import SecurityConfig
 from ..core.base import BaseCheck, CheckResult
 from ..model import ModelAdapter
@@ -26,6 +27,12 @@ class AdversarialRobustnessCheck(BaseCheck):
     For classification that is the **class flip rate** — how often the
     predicted label changes — and a high rate means a fragile decision
     boundary.
+
+    For **ordinal** multiclass — where `context.class_order` is set — the
+    flip rate is reported alongside the mean *rank distance* moved, because
+    accept -> decline is a two-step error while accept -> refer is one. A
+    model that only ever slips by one rank is materially safer than one that
+    swings across the scale, and a bare flip rate cannot tell them apart.
 
     For regression there is no such thing as a flip: every perturbation moves
     a continuous output, so a flip rate would be ~1.0 and every model would
@@ -117,8 +124,19 @@ class AdversarialRobustnessCheck(BaseCheck):
         # perturbations, used for the regression verdict.
         rel_shift = np.zeros(len(sample), dtype=float)
 
+        # Ordinal rank tracking applies only to a classification problem
+        # whose classes the caller has actually ordered.
+        ordinal_classes = (
+            list(getattr(context, "class_order", None) or ()) if task != REGRESSION else []
+        )
+        rank_shift = np.zeros(len(sample), dtype=float)
+        base_ranks = to_ranks(base_preds, ordinal_classes) if ordinal_classes else None
+
         def record(new_preds) -> None:
             flips[:] |= new_preds != base_preds
+            if base_ranks is not None:
+                moved = np.abs(to_ranks(new_preds, ordinal_classes) - base_ranks)
+                np.maximum(rank_shift, moved, out=rank_shift)
             if task == REGRESSION:
                 base = np.asarray(base_preds, dtype=float)
                 moved = np.abs(np.asarray(new_preds, dtype=float) - base)
@@ -135,29 +153,42 @@ class AdversarialRobustnessCheck(BaseCheck):
             # A real targeted attack: step every numeric feature along its own
             # per-row gradient, normalised per row so the step size stays
             # comparable to the coefficient and random paths.
-            perturbed = sample.copy()
-            norms = np.linalg.norm(per_row_gradients, axis=1, keepdims=True)
-            unit = np.divide(
-                per_row_gradients, norms, out=np.zeros_like(per_row_gradients), where=norms > 0
-            )
-            for col in numeric_cols:
-                col_scale = perturbed[col].abs() * self.config.adversarial_epsilon
-                perturbed[col] = perturbed[col] + unit[:, X.columns.get_loc(col)] * col_scale
-            record(adapter.predict(perturbed))
+            #
+            # A sign-of-gradient (FGSM-style) step: every feature moves by the
+            # full epsilon, in whichever direction increases the output. Using
+            # the gradient's *magnitude* normalised to a unit vector instead
+            # would spread one epsilon across all features, so each moved by
+            # only epsilon/sqrt(n) — a weaker perturbation than the random
+            # path applies, which is not a meaningful comparison.
+            #
+            # Both global signs are tried, because ascending alone can never
+            # flip a row already predicted positive.
+            gradient_sign = np.sign(per_row_gradients)
+            for sign in (1.0, -1.0):
+                perturbed = sample.copy()
+                for col in numeric_cols:
+                    col_scale = perturbed[col].abs() * self.config.adversarial_epsilon
+                    step = gradient_sign[:, X.columns.get_loc(col)] * col_scale
+                    perturbed[col] = perturbed[col] + sign * step
+                record(adapter.predict(perturbed))
         elif direction is not None:
             # Perturb every numeric feature at once, along the direction that
-            # most increases the linear decision score — a targeted attack
-            # rather than one feature at a time.
-            perturbed = sample.copy()
-            for col in numeric_cols:
-                # Scale each feature's step to that feature's own magnitude.
-                # A single scale derived from the mean across all columns is
-                # dominated by the largest one, so a sum-insured column in the
-                # millions would shove a 0-10 risk score by thousands — not the
-                # "small relative perturbation" this check is meant to apply.
-                col_scale = float(perturbed[col].abs().mean()) * self.config.adversarial_epsilon
-                perturbed[col] = perturbed[col] + direction[X.columns.get_loc(col)] * col_scale
-            record(adapter.predict(perturbed))
+            # most changes the linear decision score — a targeted attack rather
+            # than one feature at a time. Both signs, for the reason above.
+            for sign in (1.0, -1.0):
+                perturbed = sample.copy()
+                for col in numeric_cols:
+                    # Scale each feature's step to that feature's own magnitude.
+                    # A single scale derived from the mean across all columns is
+                    # dominated by the largest one, so a sum-insured column in
+                    # the millions would shove a 0-10 risk score by thousands —
+                    # not the "small relative perturbation" this check applies.
+                    col_scale = float(perturbed[col].abs().mean()) * self.config.adversarial_epsilon
+                    # Sign of the coefficient, matching the gradient path: the
+                    # direction that changes the score, at full epsilon.
+                    step = np.sign(direction[X.columns.get_loc(col)]) * col_scale
+                    perturbed[col] = perturbed[col] + sign * step
+                record(adapter.predict(perturbed))
         else:
             rng = np.random.default_rng(self.random_state)
             for col in numeric_cols:
@@ -196,23 +227,45 @@ class AdversarialRobustnessCheck(BaseCheck):
             ]
 
         flip_rate = float(flips.mean())
-        flag = (
-            "OK" if flip_rate <= self.config.adversarial_flip_rate_threshold else "ROBUSTNESS_RISK"
+        over_flip_rate = flip_rate > self.config.adversarial_flip_rate_threshold
+        metadata = {
+            "flip_rate": round(flip_rate, 4),
+            "threshold": self.config.adversarial_flip_rate_threshold,
+            "method": method,
+            "task": task,
+        }
+        detail = (
+            f"flip rate under {method} perturbation={flip_rate:.4f} "
+            f"(max {self.config.adversarial_flip_rate_threshold})"
         )
+
+        over_rank_shift = False
+        if base_ranks is not None:
+            mean_rank_shift = float(np.mean(rank_shift))
+            over_rank_shift = mean_rank_shift > self.config.adversarial_max_rank_shift
+            metadata.update(
+                {
+                    "mean_rank_shift": round(mean_rank_shift, 4),
+                    "max_observed_rank_shift": round(float(np.max(rank_shift)), 4),
+                    "rank_shift_threshold": self.config.adversarial_max_rank_shift,
+                    "n_classes": len(ordinal_classes),
+                }
+            )
+            detail += (
+                f"; mean ordinal rank shift={mean_rank_shift:.4f} "
+                f"(max {self.config.adversarial_max_rank_shift}), worst "
+                f"{float(np.max(rank_shift)):.0f} step(s)"
+            )
+
+        flag = "ROBUSTNESS_RISK" if (over_flip_rate or over_rank_shift) else "OK"
         return [
             CheckResult(
                 self.name,
                 self.category,
                 flag,
-                detail=f"flip rate under {method} perturbation={flip_rate:.4f} "
-                f"(max {self.config.adversarial_flip_rate_threshold})",
+                detail=detail,
                 blocking=self.blocking,
-                metadata={
-                    "flip_rate": round(flip_rate, 4),
-                    "threshold": self.config.adversarial_flip_rate_threshold,
-                    "method": method,
-                    "task": task,
-                },
+                metadata=metadata,
             )
         ]
 

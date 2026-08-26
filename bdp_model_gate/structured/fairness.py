@@ -5,11 +5,13 @@ from __future__ import annotations
 import numpy as np
 
 from .._logging import get_logger
+from ..classes import favourable_mask, resolve_favourable
 from ..config import FairnessConfig
 from ..core.base import BaseCheck, CheckResult
-from ..metrics import to_hard_labels
+from ..exceptions import GateConfigurationError
+from ..metrics import to_class_labels, to_hard_labels
 from ..model import ModelAdapter
-from ..task import ALL_TASKS, BINARY, CLASSIFICATION_TASKS
+from ..task import ALL_TASKS, CLASSIFICATION_TASKS, MULTICLASS, resolve_task
 
 logger = get_logger("fairness")
 
@@ -84,6 +86,13 @@ class ProxyCorrelationCheck(BaseCheck):
 class DisparateImpactCheck(BaseCheck):
     """Outcome-level disparity check per protected attribute (demographic parity).
 
+    For multiclass, "predicted positive" means predicted into
+    `context.favourable_classes` — for underwriting, typically `["accept"]`.
+    That set defaults to the most favourable entry of `context.class_order`
+    when one is given; with neither, the check reports NOT_APPLICABLE rather
+    than picking a class arbitrarily, because which outcome counts as
+    favourable is a judgement the data cannot supply.
+
     Demographic parity compares *selection rates* — the share of each group
     predicted positive — so it needs hard class labels. Continuous
     predictions are binarised at `config.decision_threshold` before being
@@ -127,17 +136,47 @@ class DisparateImpactCheck(BaseCheck):
                 )
             ]
 
-        y_pred = to_hard_labels(context.y_pred, self.config.decision_threshold)
-        if not np.array_equal(np.asarray(context.y_pred), y_pred):
-            logger.debug(
-                "binarised continuous y_pred at decision_threshold=%s for demographic parity",
-                self.config.decision_threshold,
+        task = resolve_task(context)
+        class_order = getattr(context, "class_order", None)
+
+        if task == MULTICLASS:
+            favourable = resolve_favourable(
+                getattr(context, "favourable_classes", None), class_order, task
             )
+            if favourable is None:
+                return [
+                    CheckResult(
+                        self.name,
+                        self.category,
+                        "NOT_APPLICABLE",
+                        "multiclass parity needs to know which outcome counts as "
+                        "favourable — set context.favourable_classes (e.g. ['accept']) "
+                        "or context.class_order",
+                        self.blocking,
+                    )
+                ]
+            labels = to_class_labels(context.y_pred, class_order)
+            # Collapse to a binary "got the good outcome" indicator, which is
+            # what a selection rate means once there are more than two classes.
+            y_pred = favourable_mask(labels, favourable).astype(int)
+            y_true_eval = favourable_mask(
+                to_class_labels(context.y_true, class_order), favourable
+            ).astype(int)
+            favourable_note = f" [favourable: {', '.join(map(str, favourable))}]"
+        else:
+            y_pred = to_hard_labels(context.y_pred, self.config.decision_threshold)
+            y_true_eval = context.y_true
+            favourable_note = ""
+            if not np.array_equal(np.asarray(context.y_pred), y_pred):
+                logger.debug(
+                    "binarised continuous y_pred at decision_threshold=%s for demographic parity",
+                    self.config.decision_threshold,
+                )
 
         results = []
         for attr in context.protected_df.columns:
             dpd = demographic_parity_difference(
-                context.y_true,
+                y_true_eval,
                 y_pred,
                 sensitive_features=context.protected_df[attr],
             )
@@ -147,7 +186,7 @@ class DisparateImpactCheck(BaseCheck):
                     self.name,
                     self.category,
                     flag,
-                    detail=f"{attr}: demographic parity diff={dpd:.3f}",
+                    detail=f"{attr}: demographic parity diff={dpd:.3f}{favourable_note}",
                     blocking=self.blocking,
                     metadata={
                         "protected_attr": attr,
@@ -204,22 +243,54 @@ class ShapSubgroupCheck(BaseCheck):
         return shap_module.Explainer(adapter.predict, X)
 
     @staticmethod
-    def _positive_class_values(values):
+    def _positive_class_values(values, class_index=None):
         """Normalises SHAP output to one contribution per (row, feature).
 
-        shap returns a 2-D array for regressors and for some binary
-        classifiers, but a 3-D (rows, features, classes) array for others —
+        shap returns a 2-D array for regressors and some binary classifiers,
+        but a 3-D (rows, features, classes) array for others —
         `RandomForestClassifier` among them, and which shape you get changed
-        across shap versions. Reduce the binary case to the positive class;
-        return None for genuine multiclass, which the caller reports as
-        NOT_APPLICABLE rather than guessing at a class.
+        across shap versions.
+
+        Binary reduces to the positive class. Multiclass reduces to
+        `class_index`, the column of the favourable outcome, so the check
+        answers "does this feature push some groups away from being
+        accepted?" rather than averaging across unrelated classes. Without
+        a class index there is no defensible reduction, so it returns None
+        and the caller reports NOT_APPLICABLE.
         """
         arr = np.asarray(values)
         if arr.ndim == 2:
             return arr
-        if arr.ndim == 3 and arr.shape[-1] == 2:
+        if arr.ndim != 3:
+            return None
+        if arr.shape[-1] == 2:
             return arr[:, :, 1]
+        if class_index is not None and 0 <= class_index < arr.shape[-1]:
+            return arr[:, :, class_index]
         return None
+
+    @staticmethod
+    def _favourable_class_index(context):
+        """Column of the favourable class in a multiclass SHAP array.
+
+        shap orders its class axis by the model's sorted class labels, which
+        is what `class_order` is matched against here.
+        """
+        class_order = getattr(context, "class_order", None)
+        if class_order is None:
+            return None
+        favourable = resolve_favourable(
+            getattr(context, "favourable_classes", None), class_order, MULTICLASS
+        )
+        if not favourable:
+            return None
+        # shap's class axis follows the model's sorted classes, not the
+        # favourability ordering the caller supplied.
+        by_model_order = sorted(class_order, key=str)
+        try:
+            return by_model_order.index(favourable[0])
+        except ValueError:  # pragma: no cover — resolve_favourable validates membership
+            return None
 
     def run(self, context) -> list[CheckResult]:
         if context.protected_df is None or context.protected_df.empty:
@@ -266,7 +337,9 @@ class ShapSubgroupCheck(BaseCheck):
                     self.blocking,
                 )
             ]
-        values = self._positive_class_values(shap_values.values)
+        values = self._positive_class_values(
+            shap_values.values, self._favourable_class_index(context)
+        )
         if values is None:
             n_classes = np.asarray(shap_values.values).shape[-1]
             return [
@@ -274,9 +347,10 @@ class ShapSubgroupCheck(BaseCheck):
                     self.name,
                     self.category,
                     "NOT_APPLICABLE",
-                    f"multiclass SHAP output ({n_classes} classes) — this check compares "
-                    "contributions for a single positive class and has no meaningful "
-                    "reduction across more than two",
+                    f"multiclass SHAP output ({n_classes} classes) and no favourable "
+                    "class to reduce to — set context.class_order or "
+                    "context.favourable_classes so contributions can be compared for "
+                    "one outcome",
                     self.blocking,
                 )
             ]
@@ -321,13 +395,34 @@ class CounterfactualFlipCheck(BaseCheck):
     name = "counterfactual_flip"
     category = "fairness"
     blocking = False
-    # Measures a shift in P(positive class); regression's analogue is the
-    # mean prediction shift, which GroupMeanGapCheck already covers.
-    supported_tasks = (BINARY,)
+    # Measures a shift in P(favourable outcome). Regression's analogue is
+    # the mean prediction shift, which GroupMeanGapCheck already covers.
+    supported_tasks = CLASSIFICATION_TASKS
 
     def __init__(self, config: FairnessConfig | None = None, n_samples: int = 200):
         self.config = config or FairnessConfig()
         self.n_samples = n_samples
+
+    @staticmethod
+    def _favourable_proba(adapter, frame, context):
+        """Probability of the favourable outcome, for binary or multiclass."""
+        if resolve_task(context) != MULTICLASS:
+            return adapter.predict_positive_proba(frame)
+        class_order = getattr(context, "class_order", None)
+        favourable = resolve_favourable(
+            getattr(context, "favourable_classes", None), class_order, MULTICLASS
+        )
+        if class_order is None or not favourable:
+            # run() screens for this, but the helper must not depend on that
+            # to stay correct if it is ever called from elsewhere.
+            raise GateConfigurationError(
+                "multiclass counterfactuals need context.class_order and a favourable "
+                "class to measure the shift in"
+            )
+        matrix = adapter.predict_proba_matrix(frame)
+        by_model_order = sorted(class_order, key=str)
+        columns = [by_model_order.index(c) for c in favourable]
+        return matrix[:, columns].sum(axis=1)
 
     def run(self, context) -> list[CheckResult]:
         if context.protected_df is None or context.protected_df.empty:
@@ -337,6 +432,17 @@ class CounterfactualFlipCheck(BaseCheck):
                     self.category,
                     "NOT_APPLICABLE",
                     "no protected_df supplied",
+                    self.blocking,
+                )
+            ]
+        if resolve_task(context) == MULTICLASS and getattr(context, "class_order", None) is None:
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    "NOT_APPLICABLE",
+                    "multiclass counterfactuals need context.class_order to identify "
+                    "the favourable outcome to measure a shift in",
                     self.blocking,
                 )
             ]
@@ -359,11 +465,11 @@ class CounterfactualFlipCheck(BaseCheck):
             if attr not in X.columns:
                 continue  # attribute excluded from model inputs — nothing to flip
             sample = X.sample(min(self.n_samples, len(X)), random_state=42).copy()
-            base_preds = adapter.predict_positive_proba(sample)
+            base_preds = self._favourable_proba(adapter, sample, context)
             for val in context.protected_df[attr].unique():
                 flipped = sample.copy()
                 flipped[attr] = val
-                flipped_preds = adapter.predict_positive_proba(flipped)
+                flipped_preds = self._favourable_proba(adapter, flipped, context)
                 shift = float(np.mean(np.abs(flipped_preds - base_preds)))
                 flag = (
                     "COUNTERFACTUAL_RISK"

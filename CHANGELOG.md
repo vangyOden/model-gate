@@ -6,6 +6,108 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-26
+
+Example notebooks — and one real bug that writing them exposed.
+
+### Added
+- **`examples/` — five notebooks**, each committed with outputs:
+  `01` binary classification (credit scoring), `02` multiclass and ordinal
+  (underwriting accept/refer/decline), `03` regression (motor premium, claims
+  severity and frequency), `04` PyTorch / Keras-shaped / remote endpoints,
+  `05` XGBoost `XGBClassifier` and native `Booster` plus `--model-loader`.
+  `01` is the on-ramp and covers the core machinery; the rest focus on what
+  their task or framework changes.
+- `examples/run_all.sh` — re-executes every notebook and fails on the first
+  error, including a cell that *records* an error without failing the run.
+  The notebooks are validated at release time rather than in CI, so this
+  makes that a one-liner.
+
+### Fixed
+- **The gradient-directed adversarial attack was weaker than random noise**,
+  which makes "targeted" meaningless. Two separate causes, both introduced
+  with `gradient_fn` in 0.3.1:
+  - The step was applied only along `+gradient`, so it could never flip a row
+    already predicted positive, while the random path perturbs in both
+    directions. Both signs are now tried.
+  - The gradient was normalised to a unit vector before scaling, so one
+    epsilon was spread across all features and each moved by only
+    `epsilon/sqrt(n)` — a materially smaller perturbation than the random
+    path applies. The step is now sign-of-gradient at full epsilon, an
+    FGSM-style attack.
+
+  Measured on the notebook 04 network: at the default `epsilon=0.02` the
+  directed attack now finds a 4.5% flip rate where random noise finds
+  **zero**; previously it found *fewer* flips than random at every epsilon
+  tested. The same signed step is applied to the `coef_` path.
+
+  A regression test now asserts that the directed attack finds strictly more
+  flips than the random one.
+
+### Notes
+- `FairnessConfig.shap_gap_threshold` is **absolute and in the units of the
+  model output**, unlike the four regression fairness thresholds which are
+  relative. On a model predicting naira in the tens of thousands the default
+  of `0.15` flags essentially every feature — 12 of 17 fairness flags in the
+  regression example before it was rescaled. Notebook `03` documents the
+  workaround; making it relative is queued for 0.4.2.
+- Notebooks `04` and `05` are separate because XGBoost and PyTorch link
+  different OpenMP runtimes on macOS and segfault in the same process.
+
+
+## [0.4.0] - 2026-08-26
+
+Multiclass support, including **ordinal** problems such as underwriting
+accept / refer / decline, where a decline-vs-accept error costs more than
+refer-vs-accept. Nothing here is breaking.
+
+### Added
+- **`context.class_order`** — class labels in ascending order of
+  favourability, e.g. `["decline", "refer", "accept"]`. Supplying it marks
+  the problem as ordinal. Omit it for a genuinely nominal problem.
+- **`context.favourable_classes`** — which outcomes count as a positive
+  result for demographic parity. Defaults to the most favourable entry of
+  `class_order` (and logs that it inferred). With neither, the multiclass
+  parity check reports `NOT_APPLICABLE` rather than picking a class
+  arbitrarily: which outcome is favourable is a judgement the data cannot
+  supply.
+- **Ordinal metrics**, both numpy-native and requiring `class_order`:
+  - `ordinal_mae` — mean absolute error in *rank* space. Predicting
+    "decline" on an "accept" case is two steps wrong; "refer" is one.
+  - `quadratic_kappa` — Cohen's kappa with quadratic weights, the standard
+    ordinal agreement measure. Penalises a disagreement by the *square* of
+    its rank distance, so a two-step error costs four times a one-step one.
+- **`PerformanceConfig.average`** (default `"macro"`) — the multiclass
+  averaging strategy for `f1`, `precision` and `recall`. Macro weights every
+  class equally, so a rarely predicted "decline" counts as much as a common
+  "accept". `metric="auto"` resolves to `balanced_accuracy` for multiclass,
+  since accuracy flatters a model that never predicts the rare class.
+- **`SecurityConfig.adversarial_max_rank_shift`** — for ordinal problems,
+  `AdversarialRobustnessCheck` now reports the mean rank *distance* a
+  prediction moves under perturbation alongside the flip rate. Two models
+  can flip at an identical rate while one wobbles by a single rank and the
+  other swings across the scale; a bare flip rate cannot tell them apart.
+- `ModelAdapter.predict_proba_matrix` — the full `(n_rows, n_classes)`
+  matrix, which the multiclass checks need.
+- CLI `--class-order`, `--favourable-classes` and `--average`.
+- `bdp_model_gate.classes`, and `tests/test_multiclass.py` — 28 tests.
+
+### Changed
+- `DisparateImpactCheck` supports multiclass by collapsing predictions to a
+  "landed in a favourable class" indicator, which is what a selection rate
+  means once there are more than two outcomes.
+- `CounterfactualFlipCheck` supports multiclass, measuring the shift in
+  P(favourable outcome). It was binary-only before.
+- `ShapSubgroupCheck` reduces a multiclass SHAP array to the favourable
+  class column, so it answers "does this feature push some groups away from
+  being accepted?" rather than averaging across unrelated classes. It
+  previously reported `NOT_APPLICABLE` for any problem with more than two
+  classes.
+- `roc_auc` and `average_precision` are now explicitly binary-only. Their
+  multiclass forms need a full probability matrix, which the `y_pred`
+  contract does not carry, so they are refused rather than approximated.
+
+
 ## [0.3.2] - 2026-08-26
 
 ### Fixed
@@ -349,7 +451,9 @@ in 0.4.0; example notebooks in 0.4.1.
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/vanjy-eng/model-gate/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.2
 [0.3.1]: https://github.com/vanjy-eng/model-gate/compare/b02ebe0...561ef52
 [0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...b02ebe0

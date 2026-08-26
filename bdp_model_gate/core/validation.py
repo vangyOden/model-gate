@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from ..exceptions import GateValidationError
+from ..classes import resolve_favourable, validate_class_order
+from ..exceptions import GateConfigurationError, GateValidationError
 from ..model import ModelAdapter
 from ..task import REGRESSION, resolve_task, validate_task
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 def validate_structured_context(context: StructuredGateContext) -> None:
     _validate_task(context)
+    _validate_classes(context)
     _validate_model(context)
     _validate_features(context)
     _validate_labels(context)
@@ -118,6 +120,21 @@ def _validate_labels(context: StructuredGateContext) -> None:
 
 def _validate_task(context: StructuredGateContext) -> None:
     validate_task(getattr(context, "task", "auto"))
+
+
+def _validate_classes(context: StructuredGateContext) -> None:
+    class_order = getattr(context, "class_order", None)
+    try:
+        validate_class_order(class_order, getattr(context, "y_true", None))
+        resolve_favourable(
+            getattr(context, "favourable_classes", None),
+            class_order,
+            resolve_task(context),
+        )
+    except GateConfigurationError as exc:
+        # Surface class-structure problems the same way as any other bad
+        # input: eagerly, before a check trips over them mid-run.
+        raise GateValidationError(str(exc)) from exc
 
 
 def _validate_expected_loss(context: StructuredGateContext) -> None:

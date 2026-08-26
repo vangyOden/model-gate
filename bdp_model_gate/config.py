@@ -60,7 +60,13 @@ class PerformanceConfig:
     without `max_error` is a GateConfigurationError rather than a guess.
 
     `min_score`/`max_error` are interpreted against whichever metric ran, so
-    set the metric and its threshold together. `decision_threshold` is used to binarize continuous
+    set the metric and its threshold together.
+
+    `average` is the multiclass averaging strategy for `f1`, `precision` and
+    `recall` (scikit-learn's `average=`). It defaults to "macro", which
+    weights every class equally — so a rarely predicted "decline" counts as
+    much as a common "accept". Use "weighted" to weight by support instead.
+    Ignored for binary and regression. `decision_threshold` is used to binarize continuous
     predictions for metrics that need hard class labels; it's ignored for
     ranking metrics like roc_auc and for custom callables.
     """
@@ -69,6 +75,7 @@ class PerformanceConfig:
     min_score: float = 0.80
     max_error: float | None = None
     decision_threshold: float = 0.5
+    average: str = "macro"
     max_latency_ms_p95: float = 200.0
     max_cost_per_inference: float = 0.002
 
@@ -128,6 +135,10 @@ class SecurityConfig:
     # relative change in prediction, which must stay proportionate to the
     # size of the perturbation.
     adversarial_max_relative_shift: float = 0.10
+    # Ordinal classification: the mean rank distance a prediction may move
+    # under perturbation. A flip from accept to decline is two steps; to
+    # refer, one. Only applied when context.class_order is set.
+    adversarial_max_rank_shift: float = 0.10
     pii_patterns: dict[str, str] = field(
         default_factory=lambda: {
             "email": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
