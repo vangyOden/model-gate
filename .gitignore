@@ -25,6 +25,12 @@ coverage.xml
 web/_site/
 web/docs/examples/*.ipynb
 
+# Mutation testing artefacts
+mutants/
+.mutmut-cache
+mutation.log
+mutation-report.txt
+
 # Gate output
 gate_report.json
 

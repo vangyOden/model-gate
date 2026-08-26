@@ -85,14 +85,32 @@ jobs:
       - name: Install
         run: pip install -e ".[dev,structured]"
       - name: Run mutation testing
-        # Time-boxed: a full run is long, and a partial score is still useful.
-        run: timeout 20m mutmut run --max-children 4 || true
+        # Time-boxed: a full run is long and a partial tally is still useful.
+        # `|| true` only tolerates the timeout — the report step below is what
+        # decides whether the run did any real work, because an earlier
+        # version of this job reported green while importing nothing.
+        run: timeout 25m mutmut run --max-children 4 2>&1 | tee mutation.log || true
+
       - name: Report
         run: |
-          echo "### Mutation testing" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          mutmut results >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python scripts/mutation_report.py mutation.log --min-tested 200 \
+            | tee mutation-report.txt
+          {
+            echo "### Mutation testing"
+            echo '```'
+            cat mutation-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-log
+          path: |
+            mutation.log
+            mutation-report.txt
+          retention-days: 7
 
   build:
     name: Build distribution

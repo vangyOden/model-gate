@@ -88,23 +88,30 @@ filterwarnings = [
 ]
 
 [tool.mutmut]
-# Mutation testing answers the question this whole release is about: would the
-# tests have noticed? It mutates the source and reports how many mutants the
-# suite kills. Run locally with `mutmut run`, then `mutmut results`.
+# Mutation testing answers the question this release is about: would the tests
+# have noticed? It mutates the source and reports how many mutants the suite
+# kills.
 #
-# Scoped to the modules where a silent wrong answer is most costly — the
-# metrics and the checks that produce a verdict. Whole-package runs are slow
-# and dominated by plumbing that a type checker already covers.
-source_paths = [
-    "bdp_model_gate/metrics.py",
-    "bdp_model_gate/classes.py",
-    "bdp_model_gate/task.py",
-    "bdp_model_gate/_sampling.py",
-    "bdp_model_gate/structured/",
+# The whole package must be copied, not just the files being mutated: mutmut
+# runs the tests from inside mutants/, and a partial copy leaves
+# `bdp_model_gate` an incomplete package whose imports fall back to the
+# installed one. Every mutant then survives, producing a 0% kill rate that
+# looks like a catastrophic result but actually means nothing ran.
+source_paths = ["bdp_model_gate/"]
+also_copy = ["tests/", "pyproject.toml"]
+
+# Mutating these buys little: the CLI is argument plumbing the integration
+# tests already cover end to end, the unstructured module is NotImplementedError
+# stubs, and logging setup has no behaviour to get wrong.
+do_not_mutate = [
+    "*/cli.py",
+    "*/_logging.py",
+    "*/unstructured/*",
 ]
-# The full suite is the wrong selection for mutation testing: the notebook-scale
-# fixtures make every mutant slow. These four files are fast and assert on
-# values rather than on "something was returned", which is what kills mutants.
+
+# The full suite is the wrong selection here: the notebook-scale fixtures make
+# every mutant slow. These four files are fast and assert on values rather than
+# on "something was returned", which is what actually kills mutants.
 pytest_add_cli_args_test_selection = [
     "tests/test_known_answers.py",
     "tests/test_invariants.py",

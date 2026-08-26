@@ -44,9 +44,21 @@ surfaced while building it.
 - **Hostile fixtures** — features spanning seven orders of magnitude, a
   three-row protected group, and a 99.5/0.5 class split.
 - **Mutation testing**, configured under `[tool.mutmut]` and running as an
-  advisory CI job. It is the only technique that answers "would my tests have
-  noticed?", which is the question this release exists to answer. Advisory
-  first; a kill-rate floor once the score is known.
+  advisory CI job — the only technique that answers "would my tests have
+  noticed?", which is the question this release exists to answer. First
+  measured baseline: **35.6%** (1118 killed of 3139 with a verdict, from 3430
+  generated). Advisory until that is stable, then a floor via
+  `scripts/mutation_report.py --min-kill-rate`.
+- **`scripts/mutation_report.py`**, which exists because the first two
+  attempts at this job both reported a number that was not true. mutmut runs
+  the tests from inside `mutants/`, so a partial source copy left
+  `bdp_model_gate` an incomplete package whose imports fell back to the
+  installed one — every mutant survived, which reads as catastrophic but means
+  nothing ran. And `mutmut results` lists **only survivors**, so counting its
+  statuses gives a 0% kill rate whatever the truth. The script parses the
+  run's own tally, takes monotonic maxima so redrawn progress lines cannot mix
+  groups, and **fails when too few mutants got a verdict** — so the job can no
+  longer go green having done nothing.
 
 ### Fixed
 - **`FairnessConfig.shap_gap_threshold` was absolute**, in the units of the

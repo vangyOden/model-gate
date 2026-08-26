@@ -78,8 +78,25 @@ change a verdict.
 
 Still open from the original plan:
 
-- **A mutation kill-rate floor.** The CI job is advisory until the score is
-  known and stable; turning it into a threshold is the follow-up.
+- **A mutation kill-rate floor.** First measured baseline is **35.6%**
+  (1118 killed of 3139 with a verdict, from 3430 generated). The job stays
+  advisory until that is stable across runs, then
+  `mutation_report.py --min-kill-rate` turns it into a threshold.
+
+  Getting there took two false starts worth recording. mutmut copies the
+  source into `mutants/` and runs the tests from there, so a partial copy left
+  `bdp_model_gate` an incomplete package whose imports silently fell back to
+  the installed one — every mutant survived, which looks like a catastrophic
+  result but means nothing ran. And `mutmut results` lists **only survivors**,
+  so counting statuses from it yields a 0% kill rate regardless of the truth.
+  `scripts/mutation_report.py` now parses the run's own tally and fails when
+  too few mutants got a verdict, so the job cannot go green having done
+  nothing.
+
+- **The survivors themselves.** 2021 of them, concentrated in
+  `structured/fairness` (506), `structured/security` (318) and `metrics`
+  (272). Each is a line the suite does not pin down; the report lists them by
+  module so the next pass has somewhere to start.
 
 ---
 
