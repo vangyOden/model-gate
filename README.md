@@ -9,8 +9,8 @@ compliance, and security checks, run as a single gate that gives you a
 `PASS` / `NEEDS_REVIEW` / `BLOCKED` status to wire into CI before a model
 is promoted to production.
 
-Covers **structured data models** for **binary classification and
-regression**. Multiclass is next (see [Roadmap](#roadmap)). Unstructured
+Covers **structured data models** for **binary classification, multiclass
+(including ordinal) and regression**. Unstructured
 (text, image, audio) support is planned — see `bdp_model_gate.unstructured`
 for the reserved interface.
 
@@ -382,6 +382,84 @@ bdp-model-gate --model-loader "mypkg.serving:load_scorer" \
 > dependency, not a model one — the regression metrics and `accuracy` are
 > numpy-native and work on a core install.
 
+## Multiclass and ordinal models
+
+Set `task="multiclass"`. If the classes have a natural ordering — an
+underwriting decision, a risk tier — supply `class_order` too, listed from
+least to most favourable:
+
+```python
+context = StructuredGateContext(
+    model=underwriter, X=X_val, y_true=decisions, y_pred=predicted,
+    protected_df=protected_val,
+    task="multiclass",
+    class_order=["decline", "refer", "accept"],   # marks it ordinal
+    favourable_classes=["accept"],                # defaults to the last entry
+)
+
+config = GateConfig()
+config.performance.metric = "quadratic_kappa"
+config.performance.min_score = 0.70
+```
+
+### Why ordering matters
+
+Plain multiclass metrics count errors. They cannot see that predicting
+**decline** on an application that should have been **accepted** is worse
+than predicting **refer** — both are simply "one mistake". For an
+underwriting gate that distinction is the whole point.
+
+Two metrics use the ordering:
+
+| Metric | Direction | What it measures |
+|---|---|---|
+| `ordinal_mae` | lower better (`max_error`) | mean error in *rank* space — decline-for-accept is 2, refer-for-accept is 1 |
+| `quadratic_kappa` | higher better (`min_score`) | chance-corrected agreement, penalising a disagreement by the **square** of its rank distance |
+
+Ordering also sharpens the robustness check. `AdversarialRobustnessCheck`
+reports the mean rank *distance* a prediction moves under perturbation
+alongside the flip rate, because two models can flip at an identical rate
+while one wobbles by a single rank and the other swings across the scale.
+
+For nominal problems with no ordering, omit `class_order` — `accuracy`,
+`balanced_accuracy`, `f1`, `precision` and `recall` all work, averaged per
+`config.performance.average` (default `"macro"`, which weights every class
+equally so a rare "decline" counts as much as a common "accept").
+
+### Fairness needs a favourable outcome
+
+Demographic parity counts a selected class. With three outcomes, which one
+counts as selected is a judgement the data cannot supply, so
+`favourable_classes` decides it — defaulting to the most favourable entry of
+`class_order`, and reporting `NOT_APPLICABLE` when neither is given rather
+than guessing.
+
+The choice genuinely changes what you measure. "Was accepted" and "was not
+declined" are different questions:
+
+```python
+context.favourable_classes = ["accept"]            # were they approved?
+context.favourable_classes = ["accept", "refer"]   # were they spared a decline?
+```
+
+`CounterfactualFlipCheck` measures the shift in P(favourable outcome), and
+`ShapSubgroupCheck` explains the favourable class column — so it answers
+"does this feature push some groups away from being accepted?" rather than
+averaging across unrelated classes.
+
+> `roc_auc` and `average_precision` stay binary-only. Their multiclass forms
+> need a full probability matrix, which the `y_pred` contract does not
+> carry, so they are refused rather than quietly approximated.
+
+From the CLI:
+
+```bash
+bdp-model-gate --model underwriter.joblib --data validation.csv \
+  --target-col decision --task multiclass \
+  --class-order "decline,refer,accept" --favourable-classes accept \
+  --metric quadratic_kappa --min-score 0.70 --output gate_report.json
+```
+
 ## Regression models
 
 Set `task` and the suite reconfigures itself. Classification-only checks
@@ -463,11 +541,9 @@ bdp-model-gate --model pricing.joblib --data validation.csv \
 
 ## Roadmap
 
-- **Multiclass support (0.4.0)** — averaged metrics, a configurable
-  favourable class for demographic parity, and ordinal awareness for
-  underwriting decisions (accept / refer / decline), where a
-  decline-vs-accept error is worse than refer-vs-accept.
-- Example notebooks for both (0.4.1).
+- Example notebooks covering regression, multiclass and framework-agnostic
+  models (0.4.1).
+- A public, subclassable `ModelAdapter` (1.0.0).
 - Unstructured data support (text/image/audio) — `bdp_model_gate.unstructured` reserves
   the shape (`UnstructuredGateContext`, a matching check suite) but raises
   `NotImplementedError` until it lands.

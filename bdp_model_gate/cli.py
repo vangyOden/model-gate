@@ -54,6 +54,16 @@ def _load_model(path: str):
     return joblib.load(path)
 
 
+def _split_labels(value: str | None) -> list[str] | None:
+    """Parses a comma-separated class-label list from the command line."""
+    if not value:
+        return None
+    labels = [part.strip() for part in value.split(",") if part.strip()]
+    if not labels:
+        raise BDPModelGateError(f"no class labels parsed from {value!r}")
+    return labels
+
+
 def _load_via_loader(spec: str):
     """Imports and calls a `"package.module:factory"` loader.
 
@@ -188,6 +198,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--class-order",
+        help=(
+            "Comma-separated class labels in ascending order of favourability, e.g. "
+            "'decline,refer,accept'. Marks a multiclass problem as ordinal, which "
+            "unlocks the ordinal_mae and quadratic_kappa metrics and rank-aware "
+            "robustness — a decline-vs-accept error then counts as worse than "
+            "refer-vs-accept."
+        ),
+    )
+    parser.add_argument(
+        "--favourable-classes",
+        help=(
+            "Comma-separated labels counting as a positive outcome for demographic "
+            "parity, e.g. 'accept'. Defaults to the last entry of --class-order."
+        ),
+    )
+    parser.add_argument(
+        "--average",
+        choices=["macro", "micro", "weighted"],
+        help=(
+            "Multiclass averaging for f1/precision/recall (default: macro, which "
+            "weights every class equally)"
+        ),
+    )
+    parser.add_argument(
         "--expected-loss-col",
         help=(
             "Column in --data holding a per-row expected loss or technical premium. "
@@ -270,6 +305,7 @@ def _apply_cli_overrides(gate_config, args):
         ("metric", "metric"),
         ("min_score", "min_score"),
         ("max_error", "max_error"),
+        ("average", "average"),
         ("decision_threshold", "decision_threshold"),
     ):
         value = getattr(args, flag_name, None)
@@ -330,6 +366,8 @@ def main(argv=None) -> int:
             model_card=model_card,
             expected_loss=expected_loss,
             task=args.task,
+            class_order=_split_labels(args.class_order),
+            favourable_classes=_split_labels(args.favourable_classes),
         )
 
         report = ModelGate(checks=default_structured_checks(gate_config)).run(context)

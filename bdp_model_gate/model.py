@@ -152,6 +152,28 @@ class ModelAdapter:
             f"predict_proba returned an array of {raw.ndim} dimensions; expected 1 or 2"
         )
 
+    def predict_proba_matrix(self, X: pd.DataFrame) -> np.ndarray:
+        """Full (n_rows, n_classes) probability matrix, for multiclass.
+
+        Unlike `predict_positive_proba` this keeps every column, because a
+        multiclass check needs to pick out one or more favourable classes.
+        """
+        if self._predict_proba_fn is not None:
+            raw = np.asarray(self._predict_proba_fn(X), dtype=float)
+        elif hasattr(self.model, "predict_proba"):
+            raw = np.asarray(self.model.predict_proba(X), dtype=float)
+        else:
+            raise GateConfigurationError(
+                "no way to obtain probabilities: context.model has no .predict_proba() "
+                "and no predict_proba_fn was supplied"
+            )
+        if raw.ndim != 2:
+            raise GateConfigurationError(
+                f"predict_proba returned {raw.ndim} dimensions; a multiclass check needs "
+                "an (n_rows, n_classes) matrix"
+            )
+        return raw
+
     def gradients(self, X: pd.DataFrame) -> np.ndarray | None:
         """Per-row, per-feature gradients of the output, if available.
 
