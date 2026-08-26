@@ -18,9 +18,12 @@ class FairnessConfig:
     `DisparateImpactCheck`, which measures selection *rates* and so needs
     hard classes. Predictions already in {0, 1} are used as-is.
 
-    The regression thresholds are relative rather than absolute: a gap is
-    measured as a fraction of the overall mean (or overall error), so the
-    same default is meaningful for a premium in naira and for a claim count.
+    Every gap threshold here is **relative**, not absolute: each is measured
+    as a fraction of the corresponding overall figure — the overall mean,
+    the overall error, or the mean absolute SHAP contribution. That is what
+    lets one default be meaningful for a premium in naira, a claim count and
+    a probability alike. An absolute threshold in the units of the model
+    output flags nothing on one scale and everything on another.
     `min_group_size` guards against a three-policy segment producing a wild
     ratio that reads as a fairness finding.
     """
@@ -37,7 +40,7 @@ class FairnessConfig:
     loss_ratio_threshold: float = 0.10  # max relative gap in premium-over-expected-loss
     min_group_size: int = 30  # groups smaller than this are reported, not scored
     proxy_corr_threshold: float = 0.30  # eta^2 above this = proxy risk
-    shap_gap_threshold: float = 0.15  # max cross-group SHAP contribution gap
+    shap_gap_threshold: float = 0.50  # max cross-group SHAP gap, relative to mean |contribution|
     counterfactual_shift_threshold: float = 0.05  # max prediction shift on attribute flip
 
 

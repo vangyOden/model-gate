@@ -3,71 +3,100 @@
 Planned work, with enough detail that decisions already taken do not get
 re-argued. Shipped releases are in [`CHANGELOG.md`](CHANGELOG.md).
 
-Current release: **0.4.1**.
+Current release: **0.4.2**.
 
 ---
 
-## 0.4.2 — Robustness of the checks themselves
+## 0.4.1-alpha — Documentation site
 
-Five silent failures have shipped and been fixed so far. Every one passed the
-test suite at the time, and for a tool whose job is catching problems that is
-the pattern worth attacking directly. Each had a specific structural cause,
-and that mapping is the plan:
+Tracked separately from the library, which is already at 0.4.1 on PyPI. The
+`-alpha` marks the **site**, not the package: it lives in `web/`, is not yet
+deployed, and its structure will move before it is announced.
 
-| Bug that shipped | Why tests missed it | Guard to build |
-|---|---|---|
-| `DisparateImpactCheck` returned `0.000` for a maximally unfair model | no test knew the *correct answer* | known-answer tests |
-| `ShapSubgroupCheck` crashed on `RandomForestClassifier` | one model family in fixtures; `assert len(results) > 0` passed on a `CHECK_ERROR` | model-family matrix + global `CHECK_ERROR` guard |
-| CLI sliced `predict_proba[:, 1]` on multiclass | CLI tested only for binary | cross-task CLI matrix |
-| adversarial perturbation scaled off the largest column | all fixture features had similar magnitude | scale-invariance test + heterogeneous fixture |
-| gradient attack was weaker than random noise | no test compared the two | already added in 0.4.1 — keep as the template |
+### Why
 
-### Activities, in value order
+`README.md` reached 604 lines and 15 top-level sections. Someone who wants
+regression scrolls past binary classification, metric selection, custom
+checks and plugins to reach it. Splitting that up is the actual win; the site
+is the means.
 
-1. **Autouse `CHECK_ERROR` guard** in `conftest.py`. Any test whose report
-   contains a `CHECK_ERROR` fails unless it opts in via a marker. A
-   `CHECK_ERROR` is *always* either a bug or an explicit expectation. This
-   one fixture would have caught the SHAP crash outright.
-2. **Known-answer suite** — one per check, with hand-derived values: parity
-   difference exactly `1.0`/`0.0`, η² exactly `1.0` for a feature that is a
-   pure function of the attribute, hand-computed `ordinal_mae`,
-   `quadratic_kappa` and loss-ratio figures, flip rate exactly `0` for a
-   constant model. If you know the answer, wrong cannot hide.
-3. **Metamorphic invariants** — properties that must hold for *any* input,
-   which no example test covers:
-   - row-permutation invariance
-   - class-relabelling invariance for ordinal metrics
-   - **feature-scale invariance** (would have caught the perturbation bug)
-   - `y`-scaling: `rmse`/`mae` scale by *k*, `r2` unchanged
-   - group-relabelling invariance
-   - monotonicity — making a model strictly more unfair must never lower the
-     disparity figure
-4. **Model-family × task matrix** — one parametrized suite over
-   `LogisticRegression`, `RandomForest`, `GradientBoosting`,
-   `SVC(probability=True)`, a `Pipeline` and a `predict_fn` closure, crossed
-   with binary / multiclass / regression. Assert every flag lands in a known
-   set.
-5. **Mutation testing** — `mutmut` over `bdp_model_gate/`, reported as a
-   non-blocking CI job first, then a kill-rate floor. The only technique that
-   actually answers *"would my tests have noticed?"*, which is the question
-   this whole release exists to answer.
-6. **Property-based layer** — `hypothesis` on the metric functions and
-   `ModelAdapter` shape handling (bounds, direction, symmetry).
-7. **`NOT_APPLICABLE` reason coverage** — every skip path asserted on its
-   reason string. Those paths are where a check silently does nothing, which
-   is the failure mode that hides best.
-8. **Hostile fixtures** — single-row groups, constant features, 99.9/0.1
-   imbalance, zero-variance target, all-NaN optional inputs.
+### Audience
 
-### Also in 0.4.2
+External — banks, insurers and any organisation with a working data-science
+team. Two consequences:
 
-- **Make `FairnessConfig.shap_gap_threshold` relative.** It is currently
-  absolute and expressed in the units of the model output, unlike the four
-  regression fairness thresholds. On a premium model predicting naira in the
-  tens of thousands the default `0.15` flags essentially every feature — 12
-  of 17 fairness findings in the regression example before it was rescaled by
-  hand. A check that flags everything is as useless as one that flags
-  nothing. Notebook `03` documents the workaround meanwhile.
+- The generic quickstart leads. NDPA/NDPR defaults are presented as
+  **configurable defaults**, not the product's premise, so a reader in
+  another regime sees themselves in the hero.
+- Insurance use cases are the worked examples rather than the framing.
+
+### Shape: landing + docs, as pandas does it
+
+Two builds under one deploy, mirroring `pandas.pydata.org` (a hand-built
+marketing root, with Sphinx docs beneath it):
+
+```
+web/
+  landing/index.html    hand-built landing page, deployed at /
+  mkdocs.yml            MkDocs Material, deployed at /docs/
+  docs/                 the guide, reference and rendered notebooks
+  requirements.txt      pinned docs toolchain
+```
+
+- **MkDocs Material**, not Sphinx: the content is already Markdown, and the
+  API is 53 public objects — not the scale where intersphinx and autodoc
+  earn their configuration cost.
+- **`mkdocstrings`** generates the API reference from the docstrings that
+  already cover 89% of the public API, so it cannot drift from the source.
+- **`mkdocs-jupyter`** renders the five executed notebooks as pages, so
+  `examples/run_all.sh` keeps them honest and there is no second copy.
+- Multi-version docs (`mike`) deferred to 1.0 — pre-1.0 and moving this
+  fast, one accurate "latest" beats five stale versions.
+
+### Known risk
+
+A site multiplies the surface that can go stale, and this project has form:
+a notebook shipped two minor versions behind, and twice a notebook's prose
+contradicted its own output. The generated API reference and rendered
+notebooks are structurally protected. **Prose code blocks are not** —
+executing them in CI is the open question, deferred to the 0.4.2 robustness
+work rather than decided here.
+
+---
+
+## 0.4.2 — Robustness of the checks themselves ✅
+
+**Shipped.** See [`CHANGELOG.md`](CHANGELOG.md) for detail. The suite went from
+167 to 256 tests across five new files: known-answer, metamorphic invariant,
+model-family matrix, property-based, and skip-reason coverage — plus an autouse
+`CHECK_ERROR` guard and advisory mutation testing.
+
+Two more bugs surfaced while building it, both found by the new tests rather
+than by inspection: `shap_gap_threshold` was absolute where it needed to be
+relative, and subsampling selected rows by position, so sorting a CSV could
+change a verdict.
+
+Still open from the original plan:
+
+- **A mutation kill-rate floor.** First measured baseline is **35.6%**
+  (1118 killed of 3139 with a verdict, from 3430 generated). The job stays
+  advisory until that is stable across runs, then
+  `mutation_report.py --min-kill-rate` turns it into a threshold.
+
+  Getting there took two false starts worth recording. mutmut copies the
+  source into `mutants/` and runs the tests from there, so a partial copy left
+  `bdp_model_gate` an incomplete package whose imports silently fell back to
+  the installed one — every mutant survived, which looks like a catastrophic
+  result but means nothing ran. And `mutmut results` lists **only survivors**,
+  so counting statuses from it yields a 0% kill rate regardless of the truth.
+  `scripts/mutation_report.py` now parses the run's own tally and fails when
+  too few mutants got a verdict, so the job cannot go green having done
+  nothing.
+
+- **The survivors themselves.** 2021 of them, concentrated in
+  `structured/fairness` (506), `structured/security` (318) and `metrics`
+  (272). Each is a line the suite does not pin down; the report lists them by
+  module so the next pass has somewhere to start.
 
 ---
 

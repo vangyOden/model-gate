@@ -1,0 +1,325 @@
+"""Metamorphic tests: properties that must hold for *any* input.
+
+Example-based tests only check the cases someone thought of. These check
+relationships between two runs — permute the rows, rescale a feature, rename
+the groups — where the answer must stay the same, or move in a known way.
+
+That is how the perturbation-scale bug would have been caught: no example
+test was wrong, but scale-invariance was violated, and no test asked.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from bdp_model_gate import GateConfig, ModelGate, PerformanceConfig, StructuredGateContext
+from bdp_model_gate.metrics import resolve_metric
+from bdp_model_gate.structured import default_structured_checks
+from bdp_model_gate.structured.fairness import DisparateImpactCheck, ProxyCorrelationCheck
+from bdp_model_gate.structured.regression_fairness import GroupMeanGapCheck
+from bdp_model_gate.structured.security import AdversarialRobustnessCheck
+
+
+class Linear:
+    """A deterministic scorer with a known dependence on each column."""
+
+    def __init__(self, weights, cut=0.0):
+        self.weights, self.cut = dict(weights), cut
+
+    def _score(self, X):
+        return sum(w * X[c].to_numpy() for c, w in self.weights.items())
+
+    def predict(self, X):
+        return (self._score(X) >= self.cut).astype(int)
+
+
+@pytest.fixture
+def frame():
+    rng = np.random.default_rng(17)
+    n = 400
+    X = pd.DataFrame(
+        {
+            "income": rng.normal(50_000, 12_000, n),
+            "age": rng.integers(21, 65, n).astype(float),
+            "tenure": rng.exponential(40, n),
+        }
+    )
+    protected = pd.DataFrame({"region": rng.choice(["Lagos", "Kano"], n)})
+    y = (X["income"] > X["income"].median()).astype(int).to_numpy()
+    return X, y, protected
+
+
+def _context(X, y, protected, **kw):
+    base = dict(
+        model=Linear({"income": 1.0}, cut=50_000),
+        X=X,
+        y_true=y,
+        y_pred=y.astype(float),
+        protected_df=protected,
+        task="binary",
+    )
+    base.update(kw)
+    return StructuredGateContext(**base)
+
+
+def _flags(report):
+    """A comparable fingerprint of a run: which check produced which flag."""
+    return sorted((r.check_name, r.flag) for r in report.results)
+
+
+# --- permutation -------------------------------------------------------------
+
+
+def test_row_order_does_not_change_the_verdict(frame):
+    """Rows are observations, not a sequence. Shuffling them consistently must
+    not change any conclusion."""
+    X, y, protected = frame
+    config = GateConfig(performance=PerformanceConfig(metric="accuracy", min_score=0.0))
+    checks = lambda: default_structured_checks(config, include_plugins=False)  # noqa: E731
+
+    original = ModelGate(checks=checks()).run(_context(X, y, protected))
+
+    order = np.random.default_rng(0).permutation(len(X))
+    shuffled = ModelGate(checks=checks()).run(
+        _context(
+            X.iloc[order].reset_index(drop=True),
+            y[order],
+            protected.iloc[order].reset_index(drop=True),
+        )
+    )
+
+    assert _flags(original) == _flags(shuffled)
+    assert original.gate_status == shuffled.gate_status
+    assert original.model_score == pytest.approx(shuffled.model_score)
+
+
+def test_group_relabelling_does_not_change_disparity_magnitude(frame):
+    """ "Lagos"/"Kano" carry no meaning to the metric. Renaming them must move
+    nothing but the labels in the output."""
+    pytest.importorskip("fairlearn")
+    X, y, protected = frame
+    renamed = protected.replace({"Lagos": "north", "Kano": "south"})
+
+    a = DisparateImpactCheck().run(_context(X, y, protected))[0]
+    b = DisparateImpactCheck().run(_context(X, y, renamed))[0]
+
+    assert a.metadata["demographic_parity_diff"] == pytest.approx(
+        b.metadata["demographic_parity_diff"]
+    )
+    assert a.flag == b.flag
+
+
+# --- scale invariance --------------------------------------------------------
+
+
+@pytest.mark.parametrize("factor", [1e-3, 1e3, 1e6])
+def test_feature_rescaling_does_not_change_the_flip_rate(frame, factor):
+    """Multiplying a feature by a constant is a change of units, not of the
+    model's behaviour — the decision boundary moves with it.
+
+    This is the invariant the adversarial check violated: a perturbation
+    scaled off the mean across *all* columns made the flip rate depend on
+    whether a column was measured in naira or millions of naira.
+    """
+    X, y, protected = frame
+    model = Linear({"income": 1.0}, cut=50_000)
+    scaled_model = Linear({"income": 1.0}, cut=50_000 * factor)
+    X_scaled = X.assign(income=X["income"] * factor)
+
+    # Score every row: the subsample is content-addressed, so two frames that
+    # differ by a scale factor would otherwise draw different rows and the
+    # comparison would measure sampling variance rather than the perturbation.
+    check = AdversarialRobustnessCheck(n_samples=len(X))
+    base = check.run(_context(X, y, protected, model=model))[0]
+    scaled = check.run(_context(X_scaled, y, protected, model=scaled_model))[0]
+
+    assert base.metadata["flip_rate"] == pytest.approx(scaled.metadata["flip_rate"], abs=0.02)
+
+
+@pytest.mark.parametrize("factor", [1e-3, 1e3])
+def test_proxy_correlation_is_scale_free(frame, factor):
+    """eta^2 is a variance ratio, so it cannot depend on units."""
+    X, y, protected = frame
+    base = ProxyCorrelationCheck(GateConfig().fairness).run(_context(X, y, protected))
+    scaled = ProxyCorrelationCheck(GateConfig().fairness).run(
+        _context(X.assign(income=X["income"] * factor), y, protected)
+    )
+    assert [r.flag for r in base] == [r.flag for r in scaled]
+
+
+def test_regression_mean_gap_is_scale_free(frame):
+    """The gap is relative to the overall mean, so scaling the target cancels."""
+    X, y, protected = frame
+    y_pred = X["income"].to_numpy()
+
+    def gap_for(scale):
+        return (
+            GroupMeanGapCheck()
+            .run(
+                StructuredGateContext(
+                    model=Linear({"income": 1.0}),
+                    X=X,
+                    y_true=y_pred * scale,
+                    y_pred=y_pred * scale,
+                    protected_df=protected,
+                    task="regression",
+                )
+            )[0]
+            .metadata["relative_gap"]
+        )
+
+    assert gap_for(1.0) == pytest.approx(gap_for(1000.0), abs=1e-9)
+
+
+def test_shap_gap_is_scale_free(frame):
+    """The reason shap_gap_threshold became relative in 0.4.2: an absolute
+    threshold in target units flags nothing on one scale and everything on
+    another."""
+    pytest.importorskip("shap")
+    from sklearn.ensemble import GradientBoostingRegressor
+
+    from bdp_model_gate.structured.fairness import ShapSubgroupCheck
+
+    X, y, protected = frame
+    target = X["income"].to_numpy() + 3_000 * (protected["region"] == "Kano").to_numpy()
+
+    def gaps_for(scale):
+        model = GradientBoostingRegressor(random_state=0, n_estimators=30).fit(X, target * scale)
+        results = ShapSubgroupCheck().run(
+            StructuredGateContext(
+                model=model,
+                X=X,
+                y_true=target * scale,
+                y_pred=model.predict(X),
+                protected_df=protected,
+                task="regression",
+            )
+        )
+        return sorted(r.metadata.get("relative_gap", 0.0) for r in results if not r.is_ok)
+
+    small, large = gaps_for(1.0), gaps_for(1e5)
+    assert len(small) == len(large)
+    for a, b in zip(small, large):
+        assert a == pytest.approx(b, rel=0.02)
+
+
+# --- metric behaviour under transformation -----------------------------------
+
+
+def test_scaling_the_target_scales_error_metrics_and_leaves_r2_alone():
+    """rmse and mae are in target units, so they scale by k. r2 is a variance
+    ratio, so it does not. Getting this backwards would make every regression
+    threshold meaningless."""
+    rng = np.random.default_rng(4)
+    y_true = rng.normal(100, 20, 300)
+    y_pred = y_true + rng.normal(0, 5, 300)
+    k = 37.0
+
+    for name in ("rmse", "mae"):
+        fn = resolve_metric(name, "regression").fn
+        assert fn(y_true * k, y_pred * k) == pytest.approx(fn(y_true, y_pred) * k)
+
+    r2 = resolve_metric("r2", "regression").fn
+    assert r2(y_true * k, y_pred * k) == pytest.approx(r2(y_true, y_pred))
+
+    # MAPE is a ratio of errors to actuals, so it is scale-free too.
+    mape = resolve_metric("mape", "regression").fn
+    assert mape(y_true * k, y_pred * k) == pytest.approx(mape(y_true, y_pred))
+
+
+def test_class_relabelling_does_not_change_ordinal_metrics():
+    """Ordinal metrics depend on rank, not on what the ranks are called."""
+    from bdp_model_gate.metrics import ordinal_mae, quadratic_kappa
+
+    order = ["low", "mid", "high"]
+    renamed = ["D", "R", "A"]
+    truth = ["high", "mid", "low", "high", "mid"]
+    pred = ["mid", "mid", "low", "high", "low"]
+    swap = dict(zip(order, renamed))
+
+    assert ordinal_mae(truth, pred, order) == pytest.approx(
+        ordinal_mae([swap[v] for v in truth], [swap[v] for v in pred], renamed)
+    )
+    assert quadratic_kappa(truth, pred, order) == pytest.approx(
+        quadratic_kappa([swap[v] for v in truth], [swap[v] for v in pred], renamed)
+    )
+
+
+# --- monotonicity ------------------------------------------------------------
+
+
+def test_making_a_model_strictly_more_unfair_never_lowers_the_disparity(frame):
+    """A disparity metric that can fall as the model gets worse is not
+    measuring disparity."""
+    pytest.importorskip("fairlearn")
+    X, y, protected = frame
+    is_kano = (protected["region"] == "Kano").to_numpy()
+    rng = np.random.default_rng(5)
+    base = rng.random(len(X)) < 0.5
+
+    previous = -1.0
+    for skew in (0.0, 0.25, 0.5, 0.75, 1.0):
+        # Progressively deny more of one group while leaving the other alone.
+        denied = is_kano & (rng.random(len(X)) < skew)
+        y_pred = np.where(denied, 0, base.astype(int))
+        gap = (
+            DisparateImpactCheck()
+            .run(
+                StructuredGateContext(
+                    model=Linear({"income": 1.0}),
+                    X=X,
+                    y_true=y,
+                    y_pred=y_pred,
+                    protected_df=protected,
+                    task="binary",
+                )
+            )[0]
+            .metadata["demographic_parity_diff"]
+        )
+        assert gap >= previous - 0.05, f"disparity fell as the model got more unfair at skew={skew}"
+        previous = gap
+
+
+def test_adding_noise_never_lowers_the_error(frame):
+    """A monotone relationship the error metrics must obey."""
+    rng = np.random.default_rng(6)
+    y_true = rng.normal(100, 20, 400)
+    rmse = resolve_metric("rmse", "regression").fn
+
+    previous = -1.0
+    for sigma in (0.0, 1.0, 5.0, 20.0):
+        value = rmse(y_true, y_true + rng.normal(0, sigma, 400))
+        assert value >= previous
+        previous = value
+
+
+# --- the sampling primitive itself -------------------------------------------
+
+
+def test_stable_sample_is_order_independent(frame):
+    """The property the whole permutation-invariance result rests on."""
+    from bdp_model_gate._sampling import stable_sample
+
+    X, _, _ = frame
+    order = np.random.default_rng(11).permutation(len(X))
+    shuffled = X.iloc[order].reset_index(drop=True)
+
+    a = stable_sample(X, 50).reset_index(drop=True).sort_values(list(X.columns))
+    b = stable_sample(shuffled, 50).reset_index(drop=True).sort_values(list(X.columns))
+
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
+
+
+def test_stable_sample_respects_the_seed_and_the_size(frame):
+    from bdp_model_gate._sampling import stable_sample
+
+    X, _, _ = frame
+    assert len(stable_sample(X, 50)) == 50
+    assert len(stable_sample(X, len(X) + 10)) == len(X)  # never over-draws
+
+    a = stable_sample(X, 50, random_state=1)
+    b = stable_sample(X, 50, random_state=2)
+    assert not a.equals(b), "random_state must still vary the selection"
+
+    # And it stays reproducible for a fixed seed.
+    pd.testing.assert_frame_equal(a, stable_sample(X, 50, random_state=1))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdp-model-gate"
-version = "0.4.1"
+version = "0.4.2"
 description = "Automated pre-deployment ML model governance gate: fairness, performance, compliance, and security checks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -58,15 +58,19 @@ dev = [
     "mypy>=1.8,<2.0",
     "ruff>=0.4,<1.0",
     "pandas-stubs",
+    "hypothesis>=6.100,<7.0",
+    "mutmut>=3.0,<4.0",
     "pyyaml>=6.0,<7.0",
     "types-PyYAML>=6.0,<7.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/vanjy-eng/model-gate"
+Homepage = "https://vanjy-eng.github.io/model-gate/"
+Documentation = "https://vanjy-eng.github.io/model-gate/docs/"
 Repository = "https://github.com/vanjy-eng/model-gate"
 Changelog = "https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md"
 Issues = "https://github.com/vanjy-eng/model-gate/issues"
+Roadmap = "https://github.com/vanjy-eng/model-gate/blob/main/ROADMAP.md"
 
 [tool.setuptools.packages.find]
 include = ["bdp_model_gate*"]
@@ -82,6 +86,39 @@ filterwarnings = [
     # actionable from this codebase, tracked upstream in joblib
     "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning:joblib",
 ]
+
+[tool.mutmut]
+# Mutation testing answers the question this release is about: would the tests
+# have noticed? It mutates the source and reports how many mutants the suite
+# kills.
+#
+# The whole package must be copied, not just the files being mutated: mutmut
+# runs the tests from inside mutants/, and a partial copy leaves
+# `bdp_model_gate` an incomplete package whose imports fall back to the
+# installed one. Every mutant then survives, producing a 0% kill rate that
+# looks like a catastrophic result but actually means nothing ran.
+source_paths = ["bdp_model_gate/"]
+also_copy = ["tests/", "pyproject.toml"]
+
+# Mutating these buys little: the CLI is argument plumbing the integration
+# tests already cover end to end, the unstructured module is NotImplementedError
+# stubs, and logging setup has no behaviour to get wrong.
+do_not_mutate = [
+    "*/cli.py",
+    "*/_logging.py",
+    "*/unstructured/*",
+]
+
+# The full suite is the wrong selection here: the notebook-scale fixtures make
+# every mutant slow. These four files are fast and assert on values rather than
+# on "something was returned", which is what actually kills mutants.
+pytest_add_cli_args_test_selection = [
+    "tests/test_known_answers.py",
+    "tests/test_invariants.py",
+    "tests/test_properties.py",
+    "tests/test_not_applicable.py",
+]
+pytest_add_cli_args = ["-x", "-q", "--no-header", "--no-cov", "-p", "no:cacheprovider"]
 
 [tool.coverage.run]
 branch = true
@@ -107,6 +144,12 @@ ignore = ["E501"]  # line length handled by formatter, not worth failing CI over
 exclude = ["examples/*.ipynb"]
 
 [tool.ruff.lint.per-file-ignores]
+# These modules call pytest.importorskip before importing an optional
+# dependency, so the imports genuinely cannot sit at the top of the file.
+"tests/test_properties.py" = ["E402"]
+"tests/test_model_matrix.py" = ["E402"]
+"tests/test_check_coverage.py" = ["E402"]
+"tests/test_cli.py" = ["E402"]
 # Tutorial notebooks introduce each import beside the code that uses it, which
 # teaches better than a wall of imports in cell 1. Real defects (F, B, UP) are
 # still enforced there.

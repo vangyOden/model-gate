@@ -1,0 +1,115 @@
+# Docs build. Deployed under /docs/; the landing page at / is hand-built and
+# lives in web/landing/. See web/README.md.
+site_name: BDP Model Gate
+site_description: >-
+  Automated pre-deployment governance for machine-learning models —
+  fairness, performance, compliance and security checks reduced to one
+  verdict your pipeline can branch on.
+site_url: https://vanjy-eng.github.io/model-gate/docs/
+repo_url: https://github.com/vanjy-eng/model-gate
+repo_name: vanjy-eng/model-gate
+edit_uri: edit/main/web/docs/
+copyright: MIT licensed
+
+docs_dir: docs
+site_dir: _site/docs
+
+theme:
+  name: material
+  language: en
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.instant
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    # Matches the landing page: deep teal accent on cool green-grey paper.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/brand.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../..]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            members_order: source
+            filters: ["!^_"]
+  - mkdocs-jupyter:
+      execute: false          # notebooks are committed with outputs
+      include_source: true
+      ignore_h1_titles: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Concepts: concepts.md
+  - Tasks:
+      - Binary classification: tasks/binary.md
+      - Multiclass and ordinal: tasks/multiclass.md
+      - Regression: tasks/regression.md
+  - Any model: models.md
+  - Reference:
+      - The checks: reference/checks.md
+      - Configuration: reference/configuration.md
+      - Command line: reference/cli.md
+      - API: reference/api.md
+  - Extending: extending.md
+  - Examples:
+      - Overview: examples/index.md
+      - 01 Binary classification: examples/01_binary_classification_sklearn.ipynb
+      - 02 Multiclass and ordinal: examples/02_multiclass_ordinal_sklearn.ipynb
+      - 03 Regression: examples/03_regression_sklearn.ipynb
+      - 04 PyTorch and friends: examples/04_any_framework_classification.ipynb
+      - 05 Boosters and the CLI: examples/05_boosters_and_cli.ipynb

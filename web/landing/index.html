@@ -1,0 +1,810 @@
+<title>BDP Model Gate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  /* ---------- tokens: complete light palette on bare :root ---------- */
+  :root {
+    --ground: #f7f8f7;
+    --surface: #ffffff;
+    --surface-sunk: #f1f4f2;
+    --ink: #10221f;
+    --ink-muted: #55635f;
+    --ink-faint: #7d8a86;
+    --rule: #dde3e0;
+    --rule-strong: #c6d0cc;
+    --accent: #0e5c55;
+    --accent-hover: #0a4741;
+    --accent-soft: #e4efec;
+    --on-accent: #ffffff;
+
+    --pass: #2e6b43;
+    --pass-soft: #e3f0e7;
+    --review: #8a5a0b;
+    --review-soft: #f7ebd5;
+    --blocked: #9b2c2c;
+    --blocked-soft: #f6e2e2;
+
+    --shadow: 0 1px 2px rgba(16, 34, 31, .05), 0 8px 24px -16px rgba(16, 34, 31, .18);
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --measure: 66ch;
+    --gutter: clamp(1.25rem, 4vw, 3.5rem);
+    --max: 1180px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0c1413;
+      --surface: #121c1a;
+      --surface-sunk: #0f1817;
+      --ink: #e8efec;
+      --ink-muted: #93a29e;
+      --ink-faint: #6f7d79;
+      --rule: #24302e;
+      --rule-strong: #35433f;
+      --accent: #4fd1be;
+      --accent-hover: #6fdccb;
+      --accent-soft: #14302c;
+      --on-accent: #06201d;
+
+      --pass: #6fcf97;
+      --pass-soft: #14291d;
+      --review: #e3b341;
+      --review-soft: #2e2411;
+      --blocked: #f08a8a;
+      --blocked-soft: #331a1a;
+
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0c1413;
+    --surface: #121c1a;
+    --surface-sunk: #0f1817;
+    --ink: #e8efec;
+    --ink-muted: #93a29e;
+    --ink-faint: #6f7d79;
+    --rule: #24302e;
+    --rule-strong: #35433f;
+    --accent: #4fd1be;
+    --accent-hover: #6fdccb;
+    --accent-soft: #14302c;
+    --on-accent: #06201d;
+
+    --pass: #6fcf97;
+    --pass-soft: #14291d;
+    --review: #e3b341;
+    --review-soft: #2e2411;
+    --blocked: #f08a8a;
+    --blocked-soft: #331a1a;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0;
+    line-height: 1.12;
+  }
+
+  p { margin: 0; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { color: var(--accent-hover); }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  code, .mono { font-family: var(--mono); font-variant-ligatures: none; }
+
+  .wrap {
+    max-width: var(--max);
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .6875rem;
+    font-weight: 500;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  section { padding-block: clamp(3rem, 7vw, 5.5rem); }
+  .divider { border-top: 1px solid var(--rule); }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .masthead-inner {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    height: 60px;
+  }
+  .wordmark {
+    display: flex;
+    align-items: baseline;
+    gap: .5rem;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .wordmark .mark {
+    width: 15px; height: 15px;
+    border: 2px solid var(--accent);
+    border-radius: 2px;
+    position: relative;
+    align-self: center;
+    flex: none;
+  }
+  .wordmark .mark::after {
+    content: "";
+    position: absolute;
+    inset: 3px 3px auto 3px;
+    height: 2px;
+    background: var(--accent);
+  }
+  .version {
+    font-family: var(--mono);
+    font-size: .6875rem;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: .15rem .4rem;
+    border-radius: 3px;
+  }
+  .masthead nav {
+    margin-left: auto;
+    display: flex;
+    gap: 1.4rem;
+    font-size: .875rem;
+  }
+  .masthead nav a { color: var(--ink-muted); text-decoration: none; }
+  .masthead nav a:hover { color: var(--accent); }
+  @media (max-width: 640px) { .masthead nav a.optional { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding-block: clamp(3rem, 8vw, 6rem) clamp(2rem, 4vw, 3rem); }
+  .hero h1 {
+    font-size: clamp(2.4rem, 6vw, 4rem);
+    font-weight: 700;
+    max-width: 18ch;
+    margin-block: .9rem 1.1rem;
+  }
+  .hero .lede {
+    font-size: clamp(1.0625rem, 1.6vw, 1.1875rem);
+    color: var(--ink-muted);
+    max-width: var(--measure);
+  }
+  .hero .lede strong { color: var(--ink); font-weight: 600; }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    align-items: center;
+    margin-top: 1.75rem;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .6rem 1.05rem;
+    border-radius: 4px;
+    font-size: .9375rem;
+    font-weight: 500;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  .btn-primary { background: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover { background: var(--accent-hover); color: var(--on-accent); }
+  .btn-ghost { border-color: var(--rule-strong); color: var(--ink); background: var(--surface); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  .install {
+    display: inline-flex;
+    align-items: center;
+    gap: .6rem;
+    font-family: var(--mono);
+    font-size: .875rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .55rem .8rem;
+    color: var(--ink);
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .install .prompt { color: var(--ink-faint); user-select: none; flex: none; }
+
+  /* ---------- verdict strip: the thesis ---------- */
+  .verdicts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  @media (max-width: 760px) { .verdicts { grid-template-columns: 1fr; } }
+
+  .verdict {
+    background: var(--surface);
+    padding: 1.4rem 1.35rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    position: relative;
+    animation: rise .5s cubic-bezier(.2, .7, .3, 1) backwards;
+  }
+  .verdict:nth-child(1) { animation-delay: .05s; }
+  .verdict:nth-child(2) { animation-delay: .13s; }
+  .verdict:nth-child(3) { animation-delay: .21s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .verdict { animation: none; } }
+
+  .verdict::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: var(--sig);
+  }
+  .verdict.pass { --sig: var(--pass); --sig-soft: var(--pass-soft); }
+  .verdict.review { --sig: var(--review); --sig-soft: var(--review-soft); }
+  .verdict.blocked { --sig: var(--blocked); --sig-soft: var(--blocked-soft); }
+
+  .verdict-head { display: flex; align-items: center; gap: .6rem; }
+  .verdict-name {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: .8125rem;
+    letter-spacing: .08em;
+    color: var(--sig);
+    background: var(--sig-soft);
+    padding: .2rem .5rem;
+    border-radius: 3px;
+  }
+  .exit {
+    font-family: var(--mono);
+    font-size: .6875rem;
+    color: var(--ink-faint);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .verdict h3 { font-size: 1.0625rem; font-weight: 600; }
+  .verdict p { font-size: .875rem; color: var(--ink-muted); }
+
+  /* ---------- quadrant nav ---------- */
+  .quad {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+    gap: 1rem;
+    margin-top: 2rem;
+  }
+  .quad-card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.35rem 1.3rem 1.4rem;
+    text-decoration: none;
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  .quad-card:hover { border-color: var(--accent); transform: translateY(-2px); color: var(--ink); }
+  .quad-card h3 { font-size: 1.0625rem; }
+  .quad-card p { font-size: .875rem; color: var(--ink-muted); }
+  .quad-card .go {
+    margin-top: .35rem;
+    font-family: var(--mono);
+    font-size: .75rem;
+    color: var(--accent);
+  }
+
+  /* ---------- checks ---------- */
+  .checks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 1rem;
+    margin-top: 2rem;
+  }
+  .check {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .7rem;
+  }
+  .check-top { display: flex; align-items: center; gap: .6rem; }
+  .check h3 { font-size: 1rem; }
+  .tag {
+    font-family: var(--mono);
+    font-size: .625rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: .18rem .42rem;
+    border-radius: 3px;
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .tag.blocking { background: var(--blocked-soft); color: var(--blocked); }
+  .tag.review { background: var(--review-soft); color: var(--review); }
+  .check ul { margin: 0; padding-left: 1.05rem; display: grid; gap: .3rem; }
+  .check li { font-size: .8125rem; color: var(--ink-muted); }
+  .check li code { font-size: .78125rem; color: var(--ink); }
+
+  /* ---------- coverage table ---------- */
+  .table-scroll { overflow-x: auto; margin-top: 2rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .875rem;
+    min-width: 560px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  th, td { text-align: left; padding: .7rem .9rem; border-bottom: 1px solid var(--rule); }
+  thead th {
+    font-family: var(--mono);
+    font-size: .6875rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { font-size: .8125rem; }
+  .cell-note { color: var(--ink-muted); }
+
+  /* ---------- code sample ---------- */
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: start;
+  }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+
+  pre {
+    margin: 0;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.15rem 1.25rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .8125rem;
+    line-height: 1.65;
+    color: var(--ink);
+    tab-size: 4;
+  }
+  .c-kw { color: var(--accent); }
+  .c-com { color: var(--ink-faint); font-style: italic; }
+  .c-str { color: var(--pass); }
+
+  .prose p + p { margin-top: .9rem; }
+  .prose p { color: var(--ink-muted); max-width: var(--measure); }
+  .prose h2 + p { margin-top: .9rem; }
+
+  /* ---------- compliance note ---------- */
+  .note {
+    border-left: 2px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 5px 5px 0;
+    padding: 1.15rem 1.35rem;
+    margin-top: 1.75rem;
+    max-width: var(--measure);
+  }
+  .note p { font-size: .9375rem; color: var(--ink); }
+  .note .eyebrow { margin-bottom: .4rem; display: block; }
+
+  /* ---------- footer ---------- */
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-block: 2.5rem 3rem;
+    font-size: .875rem;
+    color: var(--ink-muted);
+  }
+  .foot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 1.75rem;
+  }
+  .foot-grid h4 {
+    font-family: var(--mono);
+    font-size: .6875rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 .6rem;
+    font-weight: 500;
+  }
+  .foot-grid ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+  .foot-grid a { color: var(--ink-muted); text-decoration: none; }
+  .foot-grid a:hover { color: var(--accent); }
+  .colophon {
+    margin-top: 2.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem 1.5rem;
+    font-size: .8125rem;
+    color: var(--ink-faint);
+  }
+</style>
+
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <a class="wordmark" href="#top">
+      <span class="mark" aria-hidden="true"></span>
+      BDP Model Gate
+      <span class="version">0.4.1</span>
+    </a>
+    <nav>
+      <a href="#start">Getting started</a>
+      <a href="#checks" class="optional">Checks</a>
+      <a href="#coverage" class="optional">Coverage</a>
+      <a href="https://github.com/vanjy-eng/model-gate">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="hero wrap">
+    <span class="eyebrow">Pre-deployment ML governance</span>
+    <h1>Every model gets a verdict before it ships.</h1>
+    <p class="lede">
+      Fairness, performance, compliance and security checks that run
+      <strong>after training and before promotion</strong> — reduced to one
+      status your pipeline can branch on. Built for decisions that answer to
+      someone: credit scoring, underwriting, pricing and claims.
+    </p>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="docs/getting-started/">Get started</a>
+      <a class="btn btn-ghost" href="docs/">Documentation</a>
+      <span class="install">
+        <span class="prompt">$</span>pip install "bdp-model-gate[structured]"
+      </span>
+    </div>
+  </section>
+
+  <section class="wrap" style="padding-top:0;">
+    <div class="verdicts">
+      <div class="verdict pass">
+        <div class="verdict-head">
+          <span class="verdict-name">PASS</span>
+          <span class="exit">exit 0</span>
+        </div>
+        <h3>Deploy automatically</h3>
+        <p>Nothing flagged. The pipeline promotes the model without a human in the loop.</p>
+      </div>
+      <div class="verdict review">
+        <div class="verdict-head">
+          <span class="verdict-name">NEEDS_REVIEW</span>
+          <span class="exit">exit 2</span>
+        </div>
+        <h3>Stop for sign-off</h3>
+        <p>Only non-blocking flags. Fairness findings need judgement, so they route to a person rather than failing the build.</p>
+      </div>
+      <div class="verdict blocked">
+        <div class="verdict-head">
+          <span class="verdict-name">BLOCKED</span>
+          <span class="exit">exit 1</span>
+        </div>
+        <h3>Hard fail</h3>
+        <p>A performance, compliance or security check failed. The build stops and the report says which.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap divider" id="start">
+    <span class="eyebrow">Documentation</span>
+    <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">Where to go next</h2>
+    <div class="quad">
+      <a class="quad-card" href="docs/getting-started/">
+        <h3>Getting started</h3>
+        <p>Install, gate your first model, and read the report. Ten minutes end to end.</p>
+        <span class="go">Start here →</span>
+      </a>
+      <a class="quad-card" href="docs/concepts/">
+        <h3>User guide</h3>
+        <p>Tasks, metrics, thresholds, custom checks, plugins and the CI/CD gate.</p>
+        <span class="go">Read the guide →</span>
+      </a>
+      <a class="quad-card" href="docs/reference/api/">
+        <h3>API reference</h3>
+        <p>Every public class and function, generated from the source.</p>
+        <span class="go">Browse the API →</span>
+      </a>
+      <a class="quad-card" href="docs/examples/">
+        <h3>Examples</h3>
+        <p>Five runnable notebooks: binary, multiclass, regression, PyTorch, boosters.</p>
+        <span class="go">Open the notebooks →</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="wrap divider" id="checks">
+    <span class="eyebrow">Thirteen checks, four categories</span>
+    <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">What gets checked</h2>
+    <p class="prose" style="margin-top:.9rem;">
+      Optional inputs degrade rather than fail — omit protected attributes and
+      the fairness checks report <code>NOT_APPLICABLE</code> instead of
+      erroring. The gate grades what you give it.
+    </p>
+
+    <div class="checks">
+      <article class="check">
+        <div class="check-top">
+          <h3>Fairness</h3>
+          <span class="tag review">Needs review</span>
+        </div>
+        <ul>
+          <li><code>proxy_correlation</code> — features that encode a protected attribute</li>
+          <li><code>disparate_impact</code> — demographic parity</li>
+          <li><code>shap_subgroup_gap</code> — per-group contribution gaps</li>
+          <li><code>counterfactual_flip</code> — prediction shift on attribute flip</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Fairness, regression</h3>
+          <span class="tag review">Needs review</span>
+        </div>
+        <ul>
+          <li><code>loss_ratio_parity</code> — margin charged over each group's own expected loss</li>
+          <li><code>group_mean_gap</code> — spread in mean prediction</li>
+          <li><code>error_parity</code> — is the model worse for one group?</li>
+          <li><code>calibration_parity</code> — systematic over- or under-prediction</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Performance</h3>
+          <span class="tag blocking">Blocking</span>
+        </div>
+        <ul>
+          <li>Score on a metric you choose — twelve built in, or your own callable</li>
+          <li>p95 latency against a benchmark run</li>
+          <li>Cost per inference</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Compliance</h3>
+          <span class="tag blocking">Blocking</span>
+        </div>
+        <ul>
+          <li>Model card completeness</li>
+          <li>DPIA required for a high-risk use case</li>
+          <li>Explainability documented where a decision affects a person</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Security</h3>
+          <span class="tag blocking">Blocking</span>
+        </div>
+        <ul>
+          <li><code>adversarial_robustness</code> — gradient-directed or random perturbation</li>
+          <li><code>pii_leakage</code> — raw identifiers in feature columns</li>
+          <li><code>prompt_injection</code> — for any generative side-car</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Yours</h3>
+          <span class="tag review">Your call</span>
+        </div>
+        <ul>
+          <li>Subclass <code>BaseCheck</code>, implement <code>run(context)</code></li>
+          <li>Declare <code>blocking</code> and <code>supported_tasks</code></li>
+          <li>Ship checks from another package via an entry point</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="wrap divider" id="coverage">
+    <span class="eyebrow">Coverage</span>
+    <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">Any task, any model</h2>
+    <p class="prose" style="margin-top:.9rem;">
+      Nothing here imports a deep-learning framework. Pass an estimator with
+      <code>.predict()</code>, or a plain <code>fn(DataFrame) -&gt; array</code> —
+      the boundary is deliberately narrow, so tensor conversion, batching and
+      auth stay in your code.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Task</th><th>Metrics</th><th>Fairness</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Binary</strong><br><span class="cell-note">credit, fraud, lapse</span></td>
+            <td><code>roc_auc</code>, <code>average_precision</code>, <code>f1</code>, …</td>
+            <td class="cell-note">Demographic parity, proxy, SHAP, counterfactual</td>
+          </tr>
+          <tr>
+            <td><strong>Multiclass &amp; ordinal</strong><br><span class="cell-note">underwriting decisions</span></td>
+            <td><code>quadratic_kappa</code>, <code>ordinal_mae</code>, macro-averaged</td>
+            <td class="cell-note">Parity against a favourable outcome you define</td>
+          </tr>
+          <tr>
+            <td><strong>Regression</strong><br><span class="cell-note">pricing, severity, frequency</span></td>
+            <td><code>rmse</code>, <code>mape</code>, <code>poisson_deviance</code>, <code>r2</code></td>
+            <td class="cell-note">Loss-ratio, mean gap, error parity, calibration</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-scroll" style="margin-top:1rem;">
+      <table>
+        <thead>
+          <tr><th>Model</th><th>What you pass</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>scikit-learn, LightGBM, XGBoost sklearn API</td><td><code>model=estimator</code></td></tr>
+          <tr><td>Keras</td><td><code>model=</code>, plus <code>predict_proba_fn</code> for the <code>(n, 1)</code> output</td></tr>
+          <tr><td>PyTorch <code>nn.Module</code></td><td><code>predict_fn</code>, <code>predict_proba_fn</code>, <code>gradient_fn</code></td></tr>
+          <tr><td>XGBoost native <code>Booster</code></td><td><code>predict_fn</code> wrapping a <code>DMatrix</code></td></tr>
+          <tr><td>Remote scoring endpoint</td><td><code>predict_fn</code> only — no model object at all</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wrap divider">
+    <div class="split">
+      <div class="prose">
+        <span class="eyebrow">In your pipeline</span>
+        <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">Three lines, or one command</h2>
+        <p>
+          Build a context, run the gate, branch on the verdict. The same suite
+          runs from Python or as a console script, and writes a JSON report
+          your reviewers can read months later — it records which metric ran,
+          which checks were skipped, and why.
+        </p>
+        <p>
+          Exit codes separate <em>deploy</em> from <em>ask a human</em>, which
+          is the distinction most CI gates collapse.
+        </p>
+      </div>
+
+      <div>
+<pre><span class="c-kw">from</span> bdp_model_gate <span class="c-kw">import</span> ModelGate, StructuredGateContext
+
+context = StructuredGateContext(
+    model=pricing_model,
+    X=X_val, y_true=realised_loss, y_pred=quoted_premium,
+    protected_df=protected_val,
+    expected_loss=technical_premium,  <span class="c-com"># margin parity</span>
+    task=<span class="c-str">"regression"</span>,
+)
+
+report = ModelGate().run(context)
+report.to_json(<span class="c-str">"gate_report.json"</span>)
+
+<span class="c-kw">if</span> report.gate_status == <span class="c-str">"BLOCKED"</span>:
+    <span class="c-kw">raise</span> SystemExit(1)</pre>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="eyebrow">Configurable to your regime</span>
+      <p>
+        Out of the box the compliance and PII checks target
+        <strong>NDPA/NDPR</strong> — patterns for NIN, BVN and Nigerian phone
+        formats, with pricing, underwriting, credit scoring and claims
+        decisioning as DPIA triggers. Every pattern, required field and
+        high-risk use case is a plain list you replace, so the same suite runs
+        against GDPR, CCPA or an internal standard. Defaults are a starting
+        point, not regulatory advice.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <h4>Docs</h4>
+        <ul>
+          <li><a href="docs/getting-started/">Getting started</a></li>
+          <li><a href="docs/concepts/">User guide</a></li>
+          <li><a href="docs/reference/api/">API reference</a></li>
+          <li><a href="docs/examples/">Examples</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/vanjy-eng/model-gate">GitHub</a></li>
+          <li><a href="https://pypi.org/project/bdp-model-gate/">PyPI</a></li>
+          <li><a href="https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md">Changelog</a></li>
+          <li><a href="https://github.com/vanjy-eng/model-gate/blob/main/ROADMAP.md">Roadmap</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="docs/reference/checks/">The checks</a></li>
+          <li><a href="docs/reference/configuration/">Configuration</a></li>
+          <li><a href="docs/reference/cli/">CLI</a></li>
+          <li><a href="docs/extending/">Writing a check</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Install</h4>
+        <ul>
+          <li><code style="font-size:.8125rem;">pip install bdp-model-gate</code></li>
+          <li class="cell-note" style="font-size:.8125rem;">Python 3.9 – 3.13</li>
+          <li class="cell-note" style="font-size:.8125rem;">MIT licensed</li>
+        </ul>
+      </div>
+    </div>
+    <div class="colophon">
+      <span>BDP Model Gate 0.4.1</span>
+      <span>Maintained by Vangelis Oden</span>
+      <span>Site 0.4.1-alpha</span>
+      <span>MIT</span>
+    </div>
+  </div>
+</footer>

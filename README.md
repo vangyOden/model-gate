@@ -4,6 +4,8 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/bdp-model-gate)](https://pypi.org/project/bdp-model-gate/)
 [![License: MIT](https://img.shields.io/pypi/l/bdp-model-gate)](LICENSE)
 
+**📖 [Documentation](https://vanjy-eng.github.io/model-gate/)** — guide, API reference and runnable examples.
+
 Automated pre-deployment ML model governance: fairness, performance,
 compliance, and security checks, run as a single gate that gives you a
 `PASS` / `NEEDS_REVIEW` / `BLOCKED` status to wire into CI before a model

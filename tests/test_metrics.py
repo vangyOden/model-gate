@@ -93,6 +93,7 @@ def test_explicit_metric_errors_rather_than_substituting(monkeypatch, synthetic_
         check.run(_perf_context(synthetic_data))
 
 
+@pytest.mark.expect_check_error
 def test_unavailable_metric_blocks_the_gate(monkeypatch, synthetic_data):
     monkeypatch.setattr("bdp_model_gate.metrics._load_sklearn_metric", lambda spec: None)
 
