@@ -6,6 +6,55 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-26
+
+Example notebooks — and one real bug that writing them exposed.
+
+### Added
+- **`examples/` — five notebooks**, each committed with outputs:
+  `01` binary classification (credit scoring), `02` multiclass and ordinal
+  (underwriting accept/refer/decline), `03` regression (motor premium, claims
+  severity and frequency), `04` PyTorch / Keras-shaped / remote endpoints,
+  `05` XGBoost `XGBClassifier` and native `Booster` plus `--model-loader`.
+  `01` is the on-ramp and covers the core machinery; the rest focus on what
+  their task or framework changes.
+- `examples/run_all.sh` — re-executes every notebook and fails on the first
+  error, including a cell that *records* an error without failing the run.
+  The notebooks are validated at release time rather than in CI, so this
+  makes that a one-liner.
+
+### Fixed
+- **The gradient-directed adversarial attack was weaker than random noise**,
+  which makes "targeted" meaningless. Two separate causes, both introduced
+  with `gradient_fn` in 0.3.1:
+  - The step was applied only along `+gradient`, so it could never flip a row
+    already predicted positive, while the random path perturbs in both
+    directions. Both signs are now tried.
+  - The gradient was normalised to a unit vector before scaling, so one
+    epsilon was spread across all features and each moved by only
+    `epsilon/sqrt(n)` — a materially smaller perturbation than the random
+    path applies. The step is now sign-of-gradient at full epsilon, an
+    FGSM-style attack.
+
+  Measured on the notebook 04 network: at the default `epsilon=0.02` the
+  directed attack now finds a 4.5% flip rate where random noise finds
+  **zero**; previously it found *fewer* flips than random at every epsilon
+  tested. The same signed step is applied to the `coef_` path.
+
+  A regression test now asserts that the directed attack finds strictly more
+  flips than the random one.
+
+### Notes
+- `FairnessConfig.shap_gap_threshold` is **absolute and in the units of the
+  model output**, unlike the four regression fairness thresholds which are
+  relative. On a model predicting naira in the tens of thousands the default
+  of `0.15` flags essentially every feature — 12 of 17 fairness flags in the
+  regression example before it was rescaled. Notebook `03` documents the
+  workaround; making it relative is queued for 0.4.2.
+- Notebooks `04` and `05` are separate because XGBoost and PyTorch link
+  different OpenMP runtimes on macOS and segfault in the same process.
+
+
 ## [0.4.0] - 2026-08-26
 
 Multiclass support, including **ordinal** problems such as underwriting
@@ -402,7 +451,8 @@ in 0.4.0; example notebooks in 0.4.1.
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/vanjy-eng/model-gate/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.2
 [0.3.1]: https://github.com/vanjy-eng/model-gate/compare/b02ebe0...561ef52

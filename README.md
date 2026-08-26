@@ -544,8 +544,10 @@ bdp-model-gate --model pricing.joblib --data validation.csv \
 
 ## Roadmap
 
-- Example notebooks covering regression, multiclass and framework-agnostic
-  models (0.4.1).
+- Robustness of the checks themselves — known-answer tests, metamorphic
+  invariants, a cross-model matrix and mutation testing (0.4.2). Also making
+  `shap_gap_threshold` relative rather than absolute.
+- Pinned lint tooling, and reconciling pre-commit with CI (0.4.3).
 - A public, subclassable `ModelAdapter` (1.0.0).
 - Unstructured data support (text/image/audio) — `bdp_model_gate.unstructured` reserves
   the shape (`UnstructuredGateContext`, a matching check suite) but raises
@@ -586,8 +588,17 @@ This is all separate from `ci_examples/`, which are pre-deployment gates
 for models *built by* consumers of this library, not for the library's own
 code.
 
-A runnable end-to-end walkthrough of everything above lives in
-[`examples/bdp_model_gate_walkthrough.ipynb`](examples/bdp_model_gate_walkthrough.ipynb),
-committed with outputs so it reads without being run.
+## Examples
+
+Five runnable notebooks live in [`examples/`](examples/), committed with
+outputs so they read without being run:
+
+| Notebook | Covers |
+|---|---|
+| [01 binary classification](examples/01_binary_classification_sklearn.ipynb) | credit scoring, and the library end to end — **start here** |
+| [02 multiclass and ordinal](examples/02_multiclass_ordinal_sklearn.ipynb) | underwriting accept / refer / decline |
+| [03 regression](examples/03_regression_sklearn.ipynb) | motor premium, claims severity and frequency |
+| [04 PyTorch and friends](examples/04_any_framework_classification.ipynb) | `predict_fn`, `gradient_fn`, remote endpoints |
+| [05 boosters and the CLI](examples/05_boosters_and_cli.ipynb) | XGBoost `Booster`, `--model-loader` |
 
 See [`CHANGELOG.md`](https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md) for release history.

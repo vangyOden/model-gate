@@ -347,3 +347,41 @@ def test_model_and_model_loader_are_mutually_exclusive():
         build_arg_parser().parse_args(
             ["--model", "m.joblib", "--model-loader", "a:b", "--data", "d.csv", "--target-col", "y"]
         )
+
+
+def test_gradient_attack_is_stronger_than_random_noise(frame):
+    """A "targeted" attack that finds fewer weaknesses than random noise is
+    not targeted. Two earlier implementations failed this:
+
+    1. Stepping only along +gradient could never flip a row already predicted
+       positive, so it lost to bidirectional noise.
+    2. Normalising the gradient to a unit vector spread one epsilon across all
+       features, so each moved by only epsilon/sqrt(n) — a materially smaller
+       perturbation than the random path applies.
+
+    The fix is a sign-of-gradient (FGSM-style) step at full epsilon, tried in
+    both directions.
+    """
+    X, y_true, _ = frame
+
+    # A steep boundary in one feature, so a directed step beats a scattergun.
+    def proba(df):
+        return 1.0 / (1.0 + np.exp(-(df["income"].to_numpy() - 50_000) / 400.0))
+
+    def predict(df):
+        return (proba(df) >= 0.5).astype(int)
+
+    def gradients(df):
+        p = proba(df)
+        slope = p * (1 - p) / 400.0
+        return np.column_stack([slope, np.zeros(len(df)), np.zeros(len(df))])
+
+    common = dict(X=X, y_true=y_true, y_pred=proba(X), predict_fn=predict, task="binary")
+    directed = AdversarialRobustnessCheck().run(
+        StructuredGateContext(gradient_fn=gradients, **common)
+    )[0]
+    scattergun = AdversarialRobustnessCheck().run(StructuredGateContext(**common))[0]
+
+    assert directed.metadata["method"] == "gradient-fn"
+    assert scattergun.metadata["method"] == "random"
+    assert directed.metadata["flip_rate"] > scattergun.metadata["flip_rate"]

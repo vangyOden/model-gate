@@ -1,42 +1,60 @@
 # Examples
 
-## `bdp_model_gate_walkthrough.ipynb`
+Five notebooks, each committed **with outputs** so they read on GitHub
+without being run. None needs external data or credentials.
 
-An end-to-end tour of the library against a synthetic Nigerian credit-scoring
-model, covering every public surface: the four check categories, configurable
-performance metrics, `GateConfig` tuning, custom checks, the plugin entry
-point, input validation, and the CLI with its three-way exit code.
+| Notebook | Task | Domain | Model |
+|---|---|---|---|
+| [01 binary classification](01_binary_classification_sklearn.ipynb) | binary | credit scoring | `GradientBoostingClassifier` |
+| [02 multiclass and ordinal](02_multiclass_ordinal_sklearn.ipynb) | multiclass, ordinal | underwriting: accept / refer / decline | `RandomForestClassifier` |
+| [03 regression](03_regression_sklearn.ipynb) | regression | motor premium, claims severity, claims frequency | `GradientBoostingRegressor` |
+| [04 PyTorch and friends](04_any_framework_classification.ipynb) | binary | fraud | PyTorch, Keras-shaped, remote endpoint |
+| [05 boosters and the CLI](05_boosters_and_cli.ipynb) | binary | fraud | XGBoost `XGBClassifier` and `Booster` |
 
-The notebook is committed **with outputs**, so it reads on GitHub without
-being run. It needs no external data or credentials.
+**Start with 01.** It covers the core machinery — contexts, checks, reports,
+verdicts, configuration, custom checks, plugins, validation and the CLI. The
+others assume it and focus on what their task or framework changes.
 
-> **Covers 0.2.1.** Everything it shows still works, but it predates the
-> 0.3.x additions and does not cover them: prediction tasks
-> (`task="regression"`), the regression metrics and `max_error`, the four
-> regression fairness checks, or framework-agnostic models (`predict_fn`,
-> `gradient_fn`, `--model-loader`). Those are documented in the
-> [main README](../README.md); notebook coverage lands in 0.4.1, after
-> multiclass.
-
-### Running it
+## Running them
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install "bdp-model-gate[structured]" jupyter
 
-jupyter lab examples/bdp_model_gate_walkthrough.ipynb
+jupyter lab examples/
 ```
 
-Python 3.9–3.13 are all supported. The `structured` extra pulls
-`scikit-learn`, `fairlearn` and `shap`; without it the checks that need them
-report `NOT_APPLICABLE` instead of failing, which the notebook demonstrates.
+Notebooks 01–03 need nothing beyond that. The other two need one extra
+package each:
 
-> **Installing 0.2.0 specifically?** That release allowed
-> `shap>=0.44,<0.47`, which cannot import against `numpy>=2.0` — a
-> combination its `numpy<3.0` range permitted — so a fresh install raised
-> `TypeError: Converting 'np.inexact' or 'np.floating' to a dtype not
-> allowed`. 0.2.1 raised the floor to `shap>=0.48` and fixed it. Prefer
-> 0.2.1 or later — or just install the current release.
+| Notebook | Extra | Note |
+|---|---|---|
+| 04 | `pip install torch` | CPU wheel is enough |
+| 05 | `pip install xgboost` | on macOS also `brew install libomp`, which XGBoost requires on that platform |
 
-The committed outputs were produced on Python 3.13 against
-`bdp-model-gate==0.2.1` installed from PyPI.
+Python 3.9–3.13 are all supported.
+
+### Why PyTorch and XGBoost are in separate notebooks
+
+Not a stylistic choice. On macOS the two link different OpenMP runtimes and
+**segfault when used in the same process** — a hard crash, not an exception.
+A single notebook covering both would die partway through for many readers,
+so the frameworks are kept apart.
+
+## Re-executing them
+
+The notebooks are validated manually at release time rather than in CI. To
+re-run them all and fail on the first error:
+
+```bash
+./examples/run_all.sh
+```
+
+That executes each notebook in place with `nbconvert` and reports any cell
+that raised. Run it whenever the library's behaviour changes — a notebook
+committed with stale outputs is worse than no notebook, because the outputs
+look authoritative.
+
+The committed outputs were produced on Python 3.13 with
+`bdp-model-gate` 0.4.1, scikit-learn 1.7, shap 0.49, torch 2.13 and
+xgboost 3.4.
