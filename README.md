@@ -494,9 +494,14 @@ paths (`NOT_APPLICABLE` results, metric fallback) honest. Tests that need
 a real estimator `importorskip` on scikit-learn rather than failing there.
 
 The matrix covers the whole `requires-python` range. Note
-`[tool.mypy] python_version` is pinned to 3.12 for numpy's stubs, so 3.9
-compatibility is enforced by ruff's `target-version` and the 3.9 test job
-rather than by the type checker.
+`[tool.mypy] python_version` is pinned to 3.12 for numpy's stubs, so the
+type checker cannot enforce the 3.9 floor. Three other things do: ruff's
+`FA` rules (which flag PEP 604 / PEP 585 syntax used without
+`from __future__ import annotations` — evaluated at runtime on 3.9, and an
+import-time `TypeError` there while passing silently on 3.10+), an AST test
+in `tests/test_package.py` covering the same pattern, and the 3.9 job in the
+matrix. Note that `target-version = "py39"` on its own does **not** imply
+those checks.
 
 This is all separate from `ci_examples/`, which are pre-deployment gates
 for models *built by* consumers of this library, not for the library's own
