@@ -52,8 +52,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://kerahealth.example.com/bdp-model-gate"
-Changelog = "https://kerahealth.example.com/bdp-model-gate/CHANGELOG.md"
+Homepage = "https://github.com/vanjy-eng/model-gate"
+Repository = "https://github.com/vanjy-eng/model-gate"
+Changelog = "https://github.com/vanjy-eng/model-gate/blob/main/CHANGELOG.md"
+Issues = "https://github.com/vanjy-eng/model-gate/issues"
 
 [tool.setuptools.packages.find]
 include = ["bdp_model_gate*"]
