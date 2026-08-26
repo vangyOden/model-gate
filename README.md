@@ -544,15 +544,15 @@ bdp-model-gate --model pricing.joblib --data validation.csv \
 
 ## Roadmap
 
-- Robustness of the checks themselves — known-answer tests, metamorphic
-  invariants, a cross-model matrix and mutation testing (0.4.2). Also making
-  `shap_gap_threshold` relative rather than absolute.
-- Pinned lint tooling, and reconciling pre-commit with CI (0.4.3).
-- A public, subclassable `ModelAdapter` (1.0.0).
-- Unstructured data support (text/image/audio) — `bdp_model_gate.unstructured` reserves
-  the shape (`UnstructuredGateContext`, a matching check suite) but raises
-  `NotImplementedError` until it lands.
-- HTML/Markdown report rendering alongside `to_json()`.
+See [`ROADMAP.md`](ROADMAP.md) for the detail and the decisions behind each.
+
+| Release | Theme |
+|---|---|
+| **0.4.2** | Robustness of the checks themselves — known-answer tests, metamorphic invariants, a model-family matrix and mutation testing. Plus making `shap_gap_threshold` relative rather than absolute. |
+| **0.4.3** | Pinned lint tooling, and reconciling pre-commit with CI. |
+| **0.4.4** | Release automation — publish on tag via Trusted Publishing, TestPyPI smoke-test, and PyPI behind a required reviewer. |
+| **1.0.0** | A public, subclassable `ModelAdapter`. |
+| Later | Unstructured data support (text/image/audio); HTML/Markdown report rendering alongside `to_json()`. |
 
 ## Development
 
