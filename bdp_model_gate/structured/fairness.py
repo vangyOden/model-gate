@@ -8,6 +8,7 @@ from .._logging import get_logger
 from ..config import FairnessConfig
 from ..core.base import BaseCheck, CheckResult
 from ..metrics import to_hard_labels
+from ..model import ModelAdapter
 from ..task import ALL_TASKS, BINARY, CLASSIFICATION_TASKS
 
 logger = get_logger("fairness")
@@ -172,7 +173,7 @@ class ShapSubgroupCheck(BaseCheck):
         self.config = config or FairnessConfig()
 
     @staticmethod
-    def _build_explainer(shap_module, model, X):
+    def _build_explainer(shap_module, model, X, adapter=None):
         """TreeExplainer is dramatically faster and exact for tree-based
         models; fall back to the generic (permutation/kernel) Explainer for
         everything else."""
@@ -190,14 +191,17 @@ class ShapSubgroupCheck(BaseCheck):
                 return shap_module.TreeExplainer(model)
             except Exception:
                 pass  # fall through to generic explainer if TreeExplainer can't handle this model
-        try:
-            return shap_module.Explainer(model, X)
-        except (TypeError, ValueError):
-            # shap's generic Explainer wants a callable or an estimator it
-            # recognises. This library only requires `.predict()`, so hand it
-            # the bound method — the documented black-box pattern — rather
-            # than failing on a model that is otherwise perfectly valid here.
-            return shap_module.Explainer(model.predict, X)
+        if model is not None:
+            try:
+                return shap_module.Explainer(model, X)
+            except (TypeError, ValueError):
+                pass  # not an estimator shap recognises — fall through
+        # shap's generic Explainer wants a callable. Hand it the adapter's
+        # predict — the documented black-box pattern — which works for a
+        # predict_fn-only context where there is no model object at all.
+        if adapter is None:
+            adapter = ModelAdapter(model=model)
+        return shap_module.Explainer(adapter.predict, X)
 
     @staticmethod
     def _positive_class_values(values):
@@ -243,7 +247,9 @@ class ShapSubgroupCheck(BaseCheck):
             ]
 
         try:
-            explainer = self._build_explainer(shap, context.model, context.X)
+            explainer = self._build_explainer(
+                shap, context.model, context.X, ModelAdapter.from_context(context)
+            )
             shap_values = explainer(context.X)
         except Exception as exc:
             # A non-blocking fairness check must not block a deploy because
@@ -334,13 +340,15 @@ class CounterfactualFlipCheck(BaseCheck):
                     self.blocking,
                 )
             ]
-        if not hasattr(context.model, "predict_proba"):
+        adapter = ModelAdapter.from_context(context)
+        if not adapter.can_predict_proba:
             return [
                 CheckResult(
                     self.name,
                     self.category,
                     "NOT_APPLICABLE",
-                    "model has no predict_proba — counterfactual check needs probability outputs",
+                    "no probability output available — this check needs either a model "
+                    "with .predict_proba() or context.predict_proba_fn",
                     self.blocking,
                 )
             ]
@@ -351,11 +359,11 @@ class CounterfactualFlipCheck(BaseCheck):
             if attr not in X.columns:
                 continue  # attribute excluded from model inputs — nothing to flip
             sample = X.sample(min(self.n_samples, len(X)), random_state=42).copy()
-            base_preds = context.model.predict_proba(sample)[:, 1]
+            base_preds = adapter.predict_positive_proba(sample)
             for val in context.protected_df[attr].unique():
                 flipped = sample.copy()
                 flipped[attr] = val
-                flipped_preds = context.model.predict_proba(flipped)[:, 1]
+                flipped_preds = adapter.predict_positive_proba(flipped)
                 shift = float(np.mean(np.abs(flipped_preds - base_preds)))
                 flag = (
                     "COUNTERFACTUAL_RISK"

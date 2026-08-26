@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from ..exceptions import GateValidationError
+from ..model import ModelAdapter
 from ..task import REGRESSION, resolve_task, validate_task
 
 if TYPE_CHECKING:
@@ -36,16 +37,29 @@ def validate_structured_context(context: StructuredGateContext) -> None:
 
 
 def _validate_model(context: StructuredGateContext) -> None:
+    for name in ("predict_fn", "predict_proba_fn", "gradient_fn"):
+        fn = getattr(context, name, None)
+        if fn is not None and not callable(fn):
+            raise GateValidationError(f"context.{name} must be callable, got {type(fn).__name__}")
+
+    if ModelAdapter.from_context(context).can_predict:
+        return
+
     if context.model is None:
-        raise GateValidationError("context.model is required and cannot be None")
-    if not hasattr(context.model, "predict"):
         raise GateValidationError(
-            "context.model must expose a .predict() method; "
-            f"got {type(context.model).__name__} which does not"
+            "no model supplied: pass either context.model (anything with .predict(), "
+            "or a callable) or context.predict_fn=lambda df: ... for a model this "
+            "library cannot call directly, such as a PyTorch module or a remote endpoint"
         )
+    raise GateValidationError(
+        f"context.model is a {type(context.model).__name__}, which has no .predict() "
+        "method and is not callable — supply context.predict_fn instead"
+    )
 
 
 def _validate_features(context: StructuredGateContext) -> None:
+    if context.X is None:
+        raise GateValidationError("context.X is required — no feature data to evaluate")
     if not isinstance(context.X, pd.DataFrame):
         raise GateValidationError(
             f"context.X must be a pandas DataFrame, got {type(context.X).__name__}"

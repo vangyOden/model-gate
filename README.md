@@ -62,6 +62,11 @@ if report.gate_status == "BLOCKED":
     raise SystemExit("Model failed governance gate — see gate_report.json")
 ```
 
+`model` can be a scikit-learn estimator, a Keras model, a LightGBM or
+XGBoost sklearn-API model, or your own class — anything with `.predict()`.
+For a PyTorch module, a raw `Booster` or a remote endpoint, pass a function
+instead; see [Any model, not just scikit-learn](#any-model-not-just-scikit-learn).
+
 Or the one-liner:
 
 ```python
@@ -305,6 +310,77 @@ DataFrame, `y_true`/`y_pred`/`X` are aligned in length, `y_true` has at
 least two classes, `protected_df` is row-aligned and has no all-NaN
 columns, `model_card` is a dict, `generate_fn` is callable, and
 `latencies_ms` has no negative values.
+
+## Any model, not just scikit-learn
+
+Nothing here imports a deep-learning framework. Instead of requiring a
+particular object shape, the gate accepts a plain function:
+
+```python
+import torch
+
+net.eval()
+
+context = StructuredGateContext(
+    X=X_val,
+    y_true=y_val,
+    y_pred=y_pred,
+    task="regression",
+    # DataFrame in, array out — your function owns tensor conversion,
+    # device placement and batching.
+    predict_fn=lambda df: net(torch.tensor(df.values, dtype=torch.float32)).detach().numpy(),
+)
+```
+
+`model` is optional: a remote scoring endpoint has no model object at all,
+so `predict_fn` alone is a complete context. A bare callable also works as
+`model=`, so the two routes are interchangeable.
+
+| Field | Type | Unlocks |
+|---|---|---|
+| `predict_fn` | `fn(DataFrame) -> array` | everything; takes precedence over `model` |
+| `predict_proba_fn` | `fn(DataFrame) -> array` | `CounterfactualFlipCheck` |
+| `gradient_fn` | `fn(DataFrame) -> (n_rows, n_features)` | a real targeted adversarial attack |
+
+**Probability shapes are normalised.** A Keras sigmoid returns `(n, 1)`,
+scikit-learn returns `(n, 2)`, and a custom model might return `(n,)`. All
+three mean the same thing and are reduced to one positive-class vector, so
+you don't have to know which the library expects. A genuinely multiclass
+`(n, k)` output is refused with a clear message rather than silently sliced.
+
+**Gradients make the robustness check real.** `AdversarialRobustnessCheck`
+prefers true per-row gradients, falls back to `coef_` for linear models, and
+only then to random noise. Supplying `gradient_fn` turns a weak random probe
+into a targeted attack; the method used is recorded in the result metadata.
+
+```python
+context.gradient_fn = lambda df: compute_input_gradients(net, df)  # -> (n, n_features)
+```
+
+### From the CLI
+
+`joblib` only reads pickles, so `--model-loader` names a function that
+returns a model or a scoring callable. Your loader does the framework
+import:
+
+```python
+# mypkg/serving.py
+def load_scorer():
+    net = torch.load("model.pt")
+    net.eval()
+    return lambda df: net(torch.tensor(df.values).float()).detach().numpy()
+```
+
+```bash
+bdp-model-gate --model-loader "mypkg.serving:load_scorer" \
+  --data validation.csv --target-col realised_loss --task regression \
+  --metric rmse --max-error 5000 --output gate_report.json
+```
+
+> Note: `roc_auc`, `average_precision`, `balanced_accuracy`, `f1`,
+> `precision` and `recall` still need scikit-learn. That is a *metrics*
+> dependency, not a model one — the regression metrics and `accuracy` are
+> numpy-native and work on a core install.
 
 ## Regression models
 

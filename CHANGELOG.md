@@ -6,6 +6,65 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-26
+
+Any model, not just scikit-learn-shaped ones. Neural networks, raw
+boosters, custom classes and remote scoring endpoints are all gateable.
+Nothing in this release is breaking — an sklearn-style `model=` keeps
+working exactly as before.
+
+### Added
+- **`predict_fn`, `predict_proba_fn` and `gradient_fn`** on
+  `StructuredGateContext`. Each is a plain `fn(DataFrame) -> array`. The
+  boundary is deliberately "DataFrame in, array out": your function owns
+  tensor conversion, device placement, batching and auth, so this package
+  never imports a deep-learning framework and never guesses at a dtype.
+- **`context.model` is now optional.** A remote scoring endpoint has no
+  model object at all — `predict_fn` alone is a complete context. A bare
+  callable is also accepted as `model=`, so the two routes are
+  interchangeable rather than a trap.
+- **Probability-shape normalisation.** Binary classifiers emit
+  `(n, 2)` (scikit-learn), `(n, 1)` (a Keras sigmoid) or `(n,)` depending on
+  the framework; all three now reduce to one positive-class vector. A
+  genuinely multiclass `(n, k)` output is refused with a clear message
+  rather than silently sliced.
+- **`gradient_fn` powers a real targeted attack.**
+  `AdversarialRobustnessCheck` now prefers true per-row gradients, falls
+  back to `coef_` for linear models, and only then to random noise — so a
+  differentiable model gets a meaningful robustness probe instead of a weak
+  one. The method used is recorded in the result metadata as `gradient-fn`,
+  `gradient-directed` or `random`.
+- **CLI `--model-loader "package.module:factory"`.** joblib only reads
+  pickles, which rules out `.pt` checkpoints, Keras SavedModel directories,
+  ONNX graphs and endpoints. Name a function that returns a model or a
+  scoring callable and your loader does the framework import.
+  Mutually exclusive with `--model`.
+- `tests/test_model_agnostic.py` — 19 tests covering all three supply
+  routes, every binary probability shape, a torch-shaped model (callable,
+  array-in, column-vector-out) with no torch dependency, gradient
+  precedence, and the CLI loader.
+
+### Changed
+- **Checks no longer touch `context.model` directly.** A new internal
+  `bdp_model_gate.model.ModelAdapter` is the single place that knows how to
+  call a model. Previously five call sites each made their own
+  scikit-learn assumption — `.predict()`, a two-column `.predict_proba()`,
+  or `.coef_` — which is what made anything else unusable.
+- `CounterfactualFlipCheck` works for any model that can produce
+  probabilities, not only one with a `.predict_proba()` method. It was
+  `NOT_APPLICABLE` for every Keras and PyTorch model before.
+- `ShapSubgroupCheck` explains through the adapter, so it works on a
+  `predict_fn`-only context where there is no model object to introspect.
+
+### Notes
+- `roc_auc`, `average_precision`, `balanced_accuracy`, `f1`, `precision`
+  and `recall` still require scikit-learn. That is a *metrics* dependency,
+  not a model one — the regression metrics and `accuracy` are numpy-native
+  and work on a core install.
+- A public, subclassable `ModelAdapter` is deferred to 1.0.0. Until then
+  the extension point is a plain callable.
+
+
 ## [0.3.0] - 2026-08-26
 
 Regression support, and the task abstraction it needed. Multiclass follows
@@ -263,7 +322,8 @@ in 0.4.0; example notebooks in 0.4.1.
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vanjy-eng/model-gate/compare/v0.1.0...v0.2.0

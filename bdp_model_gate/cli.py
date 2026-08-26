@@ -23,6 +23,7 @@ Example (Azure Pipelines / GitHub Actions):
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ import pandas as pd
 from ._logging import configure_logging, get_logger
 from .exceptions import BDPModelGateError
 from .metrics import AUTO, BUILTIN_METRICS
+from .model import ModelAdapter
 from .task import ALL_TASKS
 from .task import AUTO as TASK_AUTO
 
@@ -52,6 +54,47 @@ def _load_model(path: str):
     return joblib.load(path)
 
 
+def _load_via_loader(spec: str):
+    """Imports and calls a `"package.module:factory"` loader.
+
+    joblib can only read pickles, which rules out `.pt` checkpoints, Keras
+    SavedModel directories, ONNX graphs and remote endpoints. Rather than
+    take a dependency on every framework, the CLI lets you name a function
+    that returns something callable — your loader does the importing.
+
+        # mypkg/serving.py
+        def load_scorer():
+            net = torch.load("model.pt"); net.eval()
+            return lambda df: net(torch.tensor(df.values).float()).detach().numpy()
+
+        bdp-model-gate --model-loader "mypkg.serving:load_scorer" ...
+    """
+    if ":" not in spec:
+        raise BDPModelGateError(f"--model-loader must be 'package.module:factory', got {spec!r}")
+    module_name, _, attr = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise BDPModelGateError(
+            f"could not import {module_name!r} for --model-loader — is it on PYTHONPATH? ({exc})"
+        ) from exc
+    try:
+        factory = getattr(module, attr)
+    except AttributeError as exc:
+        raise BDPModelGateError(f"module {module_name!r} has no attribute {attr!r}") from exc
+    if not callable(factory):
+        raise BDPModelGateError(f"{spec!r} is not callable")
+
+    loaded = factory()
+    if not (callable(loaded) or hasattr(loaded, "predict")):
+        raise BDPModelGateError(
+            f"{spec!r} returned a {type(loaded).__name__}, which is neither callable nor "
+            "has a .predict() method — return a model or a scoring function"
+        )
+    logger.info("loaded model via %s -> %s", spec, type(loaded).__name__)
+    return loaded
+
+
 def _predict(model, X: pd.DataFrame, task: str):
     """Produces y_pred appropriate to the task.
 
@@ -61,17 +104,15 @@ def _predict(model, X: pd.DataFrame, task: str):
     is how a gate reports a confident, meaningless verdict. Regression has no
     predict_proba at all.
     """
+    adapter = ModelAdapter(model=model)
     wants_proba = task in (TASK_AUTO, "binary")
-    if wants_proba and hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)
-        if proba.ndim == 2 and proba.shape[1] == 2:
-            return proba[:, 1]
-        logger.info(
-            "model.predict_proba returned %d columns, so it is not binary — using "
-            ".predict() instead. Pass --task to be explicit.",
-            proba.shape[1] if proba.ndim == 2 else 1,
-        )
-    return model.predict(X)
+    if wants_proba and adapter.can_predict_proba:
+        try:
+            return adapter.predict_positive_proba(X)
+        except BDPModelGateError as exc:
+            # Multi-column output means it is not a binary classifier.
+            logger.info("%s — falling back to .predict(). Pass --task to be explicit.", exc)
+    return adapter.predict(X)
 
 
 def _load_structured_config_file(path: str) -> dict[str, Any]:
@@ -114,7 +155,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="bdp-model-gate",
         description="Run the BDP Model Gate pre-deployment governance gate against a trained model.",
     )
-    parser.add_argument("--model", required=True, help="Path to a joblib-serialized model")
+    model_source = parser.add_mutually_exclusive_group(required=True)
+    model_source.add_argument("--model", help="Path to a joblib-serialized model")
+    model_source.add_argument(
+        "--model-loader",
+        help=(
+            "A 'package.module:factory' function returning a model or a "
+            "fn(DataFrame) -> array. Use this for anything joblib cannot unpickle — "
+            "PyTorch checkpoints, Keras SavedModel, ONNX, or a remote scoring endpoint. "
+            "Your loader does the framework import, so this package needs no "
+            "deep-learning dependency."
+        ),
+    )
     parser.add_argument("--data", required=True, help="Path to a CSV of validation data")
     parser.add_argument("--target-col", required=True, help="Column name of the ground-truth label")
     parser.add_argument(
@@ -236,7 +288,7 @@ def main(argv=None) -> int:
         from bdp_model_gate.exceptions import GateValidationError
         from bdp_model_gate.structured import default_structured_checks
 
-        model = _load_model(args.model)
+        model = _load_model(args.model) if args.model else _load_via_loader(args.model_loader)
         df = pd.read_csv(args.data)
         y_true = df[args.target_col].values
         drop_cols = [args.target_col]

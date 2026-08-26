@@ -9,6 +9,7 @@ import numpy as np
 from .._logging import get_logger
 from ..config import SecurityConfig
 from ..core.base import BaseCheck, CheckResult
+from ..model import ModelAdapter
 from ..task import REGRESSION, resolve_task
 
 logger = get_logger("security")
@@ -90,11 +91,26 @@ class AdversarialRobustnessCheck(BaseCheck):
             ]
 
         task = resolve_task(context)
+        adapter = ModelAdapter.from_context(context)
         sample = X.sample(min(self.n_samples, len(X)), random_state=self.random_state).copy()
-        base_preds = context.model.predict(sample)
+        base_preds = adapter.predict(sample)
 
-        direction = self._linear_coefficients(context.model, X.columns)
-        method = "gradient-directed" if direction is not None else "random"
+        # Preference order for the attack direction, strongest first:
+        #   1. true per-row gradients, if the model can supply them
+        #   2. linear coefficients, for models exposing coef_
+        #   3. isotropic random noise
+        per_row_gradients = adapter.gradients(sample) if adapter.can_gradient else None
+        direction = (
+            None
+            if per_row_gradients is not None
+            else self._linear_coefficients(context.model, X.columns)
+        )
+        if per_row_gradients is not None:
+            method = "gradient-fn"
+        elif direction is not None:
+            method = "gradient-directed"
+        else:
+            method = "random"
 
         flips = np.zeros(len(sample), dtype=bool)
         # Worst-case relative movement seen for each row across all
@@ -115,7 +131,20 @@ class AdversarialRobustnessCheck(BaseCheck):
                 )
                 np.maximum(rel_shift, moved / scale_ref, out=rel_shift)
 
-        if direction is not None:
+        if per_row_gradients is not None:
+            # A real targeted attack: step every numeric feature along its own
+            # per-row gradient, normalised per row so the step size stays
+            # comparable to the coefficient and random paths.
+            perturbed = sample.copy()
+            norms = np.linalg.norm(per_row_gradients, axis=1, keepdims=True)
+            unit = np.divide(
+                per_row_gradients, norms, out=np.zeros_like(per_row_gradients), where=norms > 0
+            )
+            for col in numeric_cols:
+                col_scale = perturbed[col].abs() * self.config.adversarial_epsilon
+                perturbed[col] = perturbed[col] + unit[:, X.columns.get_loc(col)] * col_scale
+            record(adapter.predict(perturbed))
+        elif direction is not None:
             # Perturb every numeric feature at once, along the direction that
             # most increases the linear decision score — a targeted attack
             # rather than one feature at a time.
@@ -128,7 +157,7 @@ class AdversarialRobustnessCheck(BaseCheck):
                 # "small relative perturbation" this check is meant to apply.
                 col_scale = float(perturbed[col].abs().mean()) * self.config.adversarial_epsilon
                 perturbed[col] = perturbed[col] + direction[X.columns.get_loc(col)] * col_scale
-            record(context.model.predict(perturbed))
+            record(adapter.predict(perturbed))
         else:
             rng = np.random.default_rng(self.random_state)
             for col in numeric_cols:
@@ -139,7 +168,7 @@ class AdversarialRobustnessCheck(BaseCheck):
                     * rng.choice([-1, 1], size=len(perturbed))
                 )
                 perturbed[col] = perturbed[col] + noise
-                record(context.model.predict(perturbed))
+                record(adapter.predict(perturbed))
 
         if task == REGRESSION:
             shift = float(np.mean(rel_shift))
