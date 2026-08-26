@@ -31,6 +31,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [0.3.1] - 2026-08-26
 
+> **Never released.** The tag for this version was withdrawn: the code cannot be imported on Python 3.9, which is inside `requires-python`. Everything below ships in [0.3.2] instead.
+
 Any model, not just scikit-learn-shaped ones. Neural networks, raw
 boosters, custom classes and remote scoring endpoints are all gateable.
 Nothing in this release is breaking — an sklearn-style `model=` keeps
@@ -89,6 +91,8 @@ working exactly as before.
 
 
 ## [0.3.0] - 2026-08-26
+
+> **Never released.** The tag for this version was withdrawn: the code cannot be imported on Python 3.9, which is inside `requires-python`. Everything below ships in [0.3.2] instead.
 
 Regression support, and the task abstraction it needed. Multiclass follows
 in 0.4.0; example notebooks in 0.4.1.
@@ -346,9 +350,9 @@ in 0.4.0; example notebooks in 0.4.1.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
 [Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.0
+[0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.2
+[0.3.1]: https://github.com/vanjy-eng/model-gate/compare/b02ebe0...561ef52
+[0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...b02ebe0
 [0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vanjy-eng/model-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vanjy-eng/model-gate/releases/tag/v0.1.0
