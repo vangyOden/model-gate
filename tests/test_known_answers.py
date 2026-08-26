@@ -294,16 +294,20 @@ def test_constant_regression_model_has_exactly_zero_relative_shift():
 # --- metrics -----------------------------------------------------------------
 
 
-def test_perfect_and_inverted_predictions_hit_the_metric_bounds():
+def test_accuracy_bounds_without_scikit_learn():
+    """accuracy is numpy-native, so this must hold on a core install too."""
     y = np.array([0, 0, 1, 1])
     assert resolve_metric("accuracy", "binary").fn(y, y) == pytest.approx(1.0)
     assert resolve_metric("accuracy", "binary").fn(y, 1 - y) == pytest.approx(0.0)
-    assert resolve_metric("roc_auc", "binary").fn(
-        y, np.array([0.1, 0.2, 0.8, 0.9])
-    ) == pytest.approx(1.0)
-    assert resolve_metric("roc_auc", "binary").fn(
-        y, np.array([0.9, 0.8, 0.2, 0.1])
-    ) == pytest.approx(0.0)
+
+
+def test_roc_auc_bounds():
+    """Perfect ranking is 1.0 and perfectly inverted is 0.0, by definition."""
+    pytest.importorskip("sklearn", reason="roc_auc needs scikit-learn")
+    y = np.array([0, 0, 1, 1])
+    auc = resolve_metric("roc_auc", "binary").fn
+    assert auc(y, np.array([0.1, 0.2, 0.8, 0.9])) == pytest.approx(1.0)
+    assert auc(y, np.array([0.9, 0.8, 0.2, 0.1])) == pytest.approx(0.0)
 
 
 def test_regression_metrics_on_hand_computable_values():
