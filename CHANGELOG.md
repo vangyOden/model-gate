@@ -6,6 +6,29 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-26
+
+### Fixed
+- **The package could not be imported on Python 3.9**, which is inside the
+  supported range (`requires-python = ">=3.9"`). `config.py` gained
+  `max_error: float | None` in 0.3.0 but has no
+  `from __future__ import annotations`, so the PEP 604 union was evaluated
+  at runtime — a dataclass field annotation, so it fired on import and took
+  every test module down at collection with
+  `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`.
+  Invisible on 3.10+, where PEP 604 is native. Broke the 3.9 CI job on both
+  the 0.3.0 and 0.3.1 pushes; every other job passed.
+
+### Changed
+- Ruff now selects the `FA` rules, which flag PEP 604 and PEP 585 syntax
+  used without `from __future__ import annotations`. `FA102` reproduces the
+  failure above statically, so lint catches it on any interpreter instead
+  of only the 3.9 CI job. This was the actual gap: `target-version = "py39"`
+  alone does not imply those checks.
+- Added a test that walks the package AST for the same pattern, so the guard
+  survives a change to the lint configuration.
+
+
 ## [0.3.1] - 2026-08-26
 
 Any model, not just scikit-learn-shaped ones. Neural networks, raw
@@ -322,7 +345,8 @@ in 0.4.0; example notebooks in 0.4.1.
 - `bdp-model-gate` CLI for CI/CD use.
 - Azure Pipelines and GitHub Actions pre-deployment gate examples.
 
-[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/vanjy-eng/model-gate/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/vanjy-eng/model-gate/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/vanjy-eng/model-gate/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/vanjy-eng/model-gate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vanjy-eng/model-gate/compare/v0.2.0...v0.2.1

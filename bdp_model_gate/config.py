@@ -2,6 +2,8 @@
 tune thresholds per model/use case; defaults are reasonable starting points,
 not regulatory guidance."""
 
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass, field
 
