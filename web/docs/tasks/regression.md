@@ -11,6 +11,7 @@ context = StructuredGateContext(
     y_pred=quoted_premium,
     protected_df=protected_val,
     expected_loss=technical_premium,  # enables loss-ratio parity
+    exposure=earned_vehicle_years,  # weights every metric below — see Insurance pricing
     task="regression",
 )
 
@@ -31,9 +32,10 @@ This is the change that catches people out. Error metrics are
 | `mae` | lower better | `max_error` | robust to outliers |
 | `mape` | lower better | `max_error` | skewed money — claims severity |
 | `poisson_deviance` | lower better | `max_error` | counts — claims frequency |
+| `lorenz_gini` | higher better | `min_score` | pricing discrimination — see [Insurance pricing](insurance.md) |
 
-All five are implemented in numpy, so they work on a core install without
-scikit-learn.
+All six are implemented in numpy, so they work on a core install without
+scikit-learn, and all six accept `context.exposure` as a per-row weight.
 
 There is deliberately **no default `max_error`** — a sensible ceiling depends
 entirely on whether the target is naira or claim counts — so configuring an
@@ -90,6 +92,32 @@ It requires `context.expected_loss` — a per-row expected loss, technical
 premium or pure premium. Without it the check reports `NOT_APPLICABLE` rather
 than falling back to a raw-price comparison, which would answer a different
 question under the same name.
+
+## Split it out of time
+
+A pricing model will be applied to **next quarter's** business. A random split
+asks a different and easier question — can it price a policy it has not seen?
+— and inflation, seasonality and portfolio mix all leak backwards through one,
+so it flatters the model.
+
+The gate requires an out-of-time holdout for the high-risk use cases, pricing
+among them, and reads the claim from the model card:
+
+```python
+context = StructuredGateContext(
+    ...,
+    X_train=X_train,  # enables split-overlap and train-serve skew
+    model_card={"use_case": "pricing", "validation_strategy": "out_of_time"},
+)
+```
+
+Worth knowing here rather than only in the [reference](../reference/checks.md):
+`technical_premium` is a natural leaked target on a pricing model. If it is in
+`X` *and* it is what `expected_loss` is derived from, the model is being
+graded against its own input. `target_leakage` will say so.
+
+Notebook [03](../examples/03_regression_sklearn.ipynb) works all three of
+these through on one book.
 
 ## Robustness on a continuous output
 

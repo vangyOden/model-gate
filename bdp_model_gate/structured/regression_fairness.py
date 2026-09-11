@@ -24,6 +24,15 @@ Every gap is measured *relative* to the overall figure, so a single
 threshold works whether the target is a naira premium or a claim count.
 Groups smaller than `FairnessConfig.min_group_size` are reported but not
 scored: a three-policy segment produces wild ratios that read as findings.
+
+All four are **exposure-weighted** when `context.exposure` is supplied, and
+the detail string says so. Without it every row counts once, which is the
+right default for a per-policy total and the wrong one for a rate: a group
+holding mostly one-month policies would otherwise appear to have the same
+weight of evidence behind it as a group holding annual ones. `min_group_size`
+still counts *rows*, not exposure — it exists to stop a three-policy segment
+producing a ratio, and three policies are three policies however long they
+ran.
 """
 
 from __future__ import annotations
@@ -32,9 +41,19 @@ import numpy as np
 import pandas as pd
 
 from .._logging import get_logger
-from ..config import FairnessConfig
+from ..actuarial import (
+    actual_over_expected,
+    assign_bands,
+    band_edges,
+    exposure_array,
+    weighted_mean,
+    weights_or_ones,
+)
+from ..config import FairnessConfig, UncertaintyConfig
 from ..core.base import BaseCheck, CheckResult
+from ..groups import group_series
 from ..task import REGRESSION
+from ..uncertainty import Uncertainty
 
 logger = get_logger("regression_fairness")
 
@@ -69,6 +88,13 @@ def _usable_groups(protected: pd.Series, min_group_size: int) -> tuple[list, lis
     return usable, too_small
 
 
+def _exposure_note(context) -> str:
+    """Says whether the figures beside it were weighted. Never silent: an
+    exposure-weighted mean and an unweighted one are different numbers, and
+    the report has to say which one it is showing."""
+    return " [exposure-weighted]" if getattr(context, "exposure", None) is not None else ""
+
+
 def _small_group_note(too_small: list[tuple[str, int]], min_group_size: int) -> str:
     if not too_small:
         return ""
@@ -83,8 +109,73 @@ class _RegressionFairnessCheck(BaseCheck):
     blocking = False
     supported_tasks = (REGRESSION,)
 
-    def __init__(self, config: FairnessConfig | None = None):
+    def __init__(
+        self,
+        config: FairnessConfig | None = None,
+        uncertainty: UncertaintyConfig | None = None,
+    ):
         self.config = config or FairnessConfig()
+        self.uncertainty = Uncertainty(uncertainty)
+
+    def _gap_interval(self, context, attr, usable, per_row, reference):
+        """A bootstrap interval on the relative gap for one attribute.
+
+        `per_row` is `fn(positions) -> array` giving the quantity being
+        compared, and `reference` is `fn(positions, values, weights) -> float`
+        giving the denominator. Both are the check's own functions, so the
+        interval measures the same gap the verdict came from.
+
+        The group *set* is fixed from the full data rather than re-derived per
+        resample. A resample can push a group under `min_group_size`, and
+        re-filtering would compare a different set of groups in each draw —
+        the interval would then describe a moving statistic rather than the
+        sampling error of a fixed one. Groups that vanish from a resample
+        entirely are skipped for that draw.
+        """
+        weights = self._weights(context)
+        groups = context.protected_df[attr].to_numpy()
+        chosen = [str(g) for g in usable]
+
+        def gap(positions):
+            drawn = groups[positions].astype(str)
+            values = per_row(positions)
+            drawn_weights = weights[positions]
+            per = []
+            for group in chosen:
+                mask = (drawn == group) & np.isfinite(values)
+                if not mask.any():
+                    continue
+                per.append(weighted_mean(values[mask], drawn_weights[mask]))
+            per = [v for v in per if np.isfinite(v)]
+            if len(per) < 2:
+                # Nothing to compare in this draw. Zero rather than an
+                # exception: an uninformative resample is not an error.
+                return 0.0
+            overall = reference(positions, values, drawn_weights)
+            return _relative_gap(pd.Series(per, dtype=float), overall)
+
+        # The weights go into the canonical ordering because two rows with the
+        # same value and different exposure are different observations. They
+        # are **normalised by their mean** first, for two reasons that happen
+        # to want the same thing: a bootstrap only cares about relative
+        # weights, and the 0.5.3 invariants require that exposure in months
+        # and exposure in years produce the same verdict — and that a uniform
+        # exposure column is a no-op. Hashing the raw column would break both.
+        total = float(np.mean(weights))
+        frame = pd.DataFrame(
+            {
+                "value": per_row(np.arange(len(groups))),
+                "group": groups,
+                "w": weights / total if total else weights,
+            }
+        )
+        return self.uncertainty.interval(gap, frame)
+
+    @staticmethod
+    def _weights(context) -> np.ndarray:
+        """Per-row exposure weights, or ones. One place, so the four checks
+        cannot end up weighting three different ways."""
+        return weights_or_ones(exposure_array(context), len(context.X))
 
     def _per_group(self, context, statistic):
         """Applies `statistic(mask)` to each sufficiently large group of each
@@ -121,12 +212,30 @@ class GroupMeanGapCheck(_RegressionFairnessCheck):
             return _no_protected(self)
 
         y_pred = np.asarray(context.y_pred, dtype=float)
-        overall = float(np.mean(y_pred))
+        weights = self._weights(context)
+        weighted = _exposure_note(context)
+        overall = weighted_mean(y_pred, weights)
         results = []
 
-        for attr, means, note in self._per_group(context, lambda m: float(np.mean(y_pred[m]))):
+        for attr, means, note in self._per_group(
+            context, lambda m: weighted_mean(y_pred[m], weights[m])
+        ):
             gap = _relative_gap(means, overall)
-            flag = "MEAN_GAP_RISK" if gap > self.config.mean_gap_threshold else "OK"
+            interval = self._gap_interval(
+                context,
+                attr,
+                list(means.index),
+                lambda positions: y_pred[positions],
+                lambda positions, values, w: weighted_mean(values, w),
+            )
+            verdict = self.uncertainty.verdict(
+                interval,
+                self.config.mean_gap_threshold,
+                point=gap,
+                risk_flag="MEAN_GAP_RISK",
+                blocking=self.blocking,
+            )
+            flag = verdict.flag
             hi, lo = means.idxmax(), means.idxmin()
             results.append(
                 CheckResult(
@@ -136,16 +245,18 @@ class GroupMeanGapCheck(_RegressionFairnessCheck):
                     detail=(
                         f"{attr}: mean prediction spans {means.min():,.2f} ({lo}) to "
                         f"{means.max():,.2f} ({hi}) — {gap:.1%} of the overall mean "
-                        f"{overall:,.2f}{note}"
+                        f"{overall:,.2f}{weighted}{note}{verdict.note}"
                     ),
-                    blocking=self.blocking,
+                    blocking=verdict.blocking,
                     metadata={
                         "protected_attr": attr,
                         "relative_gap": round(gap, 4),
                         "threshold": self.config.mean_gap_threshold,
+                        "exposure_weighted": bool(weighted),
                         "group_means": {str(k): round(v, 4) for k, v in means.items()},
                         "highest_group": str(hi),
                         "lowest_group": str(lo),
+                        **verdict.metadata,
                     },
                 )
             )
@@ -187,13 +298,31 @@ class ErrorParityCheck(_RegressionFairnessCheck):
 
         y_true = np.asarray(context.y_true, dtype=float)
         y_pred = np.asarray(context.y_pred, dtype=float)
+        weights = self._weights(context)
+        weighted = _exposure_note(context)
         abs_err = np.abs(y_true - y_pred)
-        overall = float(np.mean(abs_err))
+        overall = weighted_mean(abs_err, weights)
         results = []
 
-        for attr, errors, note in self._per_group(context, lambda m: float(np.mean(abs_err[m]))):
+        for attr, errors, note in self._per_group(
+            context, lambda m: weighted_mean(abs_err[m], weights[m])
+        ):
             gap = _relative_gap(errors, overall)
-            flag = "ERROR_PARITY_RISK" if gap > self.config.error_parity_threshold else "OK"
+            interval = self._gap_interval(
+                context,
+                attr,
+                list(errors.index),
+                lambda positions: abs_err[positions],
+                lambda positions, values, w: weighted_mean(values, w),
+            )
+            verdict = self.uncertainty.verdict(
+                interval,
+                self.config.error_parity_threshold,
+                point=gap,
+                risk_flag="ERROR_PARITY_RISK",
+                blocking=self.blocking,
+            )
+            flag = verdict.flag
             worst = errors.idxmax()
             results.append(
                 CheckResult(
@@ -203,15 +332,17 @@ class ErrorParityCheck(_RegressionFairnessCheck):
                     detail=(
                         f"{attr}: mean absolute error spans {errors.min():,.2f} to "
                         f"{errors.max():,.2f} (worst: {worst}) — {gap:.1%} of the overall "
-                        f"MAE {overall:,.2f}{note}"
+                        f"MAE {overall:,.2f}{weighted}{note}{verdict.note}"
                     ),
-                    blocking=self.blocking,
+                    blocking=verdict.blocking,
                     metadata={
                         "protected_attr": attr,
                         "relative_gap": round(gap, 4),
                         "threshold": self.config.error_parity_threshold,
+                        "exposure_weighted": bool(weighted),
                         "group_mae": {str(k): round(v, 4) for k, v in errors.items()},
                         "worst_served_group": str(worst),
+                        **verdict.metadata,
                     },
                 )
             )
@@ -253,13 +384,31 @@ class CalibrationParityCheck(_RegressionFairnessCheck):
 
         y_true = np.asarray(context.y_true, dtype=float)
         y_pred = np.asarray(context.y_pred, dtype=float)
-        overall_actual = float(np.mean(y_true))
+        weights = self._weights(context)
+        weighted = _exposure_note(context)
+        overall_actual = weighted_mean(y_true, weights)
         residual = y_pred - y_true  # positive = over-prediction
         results = []
 
-        for attr, bias, note in self._per_group(context, lambda m: float(np.mean(residual[m]))):
+        for attr, bias, note in self._per_group(
+            context, lambda m: weighted_mean(residual[m], weights[m])
+        ):
             gap = _relative_gap(bias, overall_actual)
-            flag = "CALIBRATION_RISK" if gap > self.config.calibration_threshold else "OK"
+            interval = self._gap_interval(
+                context,
+                attr,
+                list(bias.index),
+                lambda positions: residual[positions],
+                lambda positions, values, w: weighted_mean(y_true[positions], w),
+            )
+            verdict = self.uncertainty.verdict(
+                interval,
+                self.config.calibration_threshold,
+                point=gap,
+                risk_flag="CALIBRATION_RISK",
+                blocking=self.blocking,
+            )
+            flag = verdict.flag
             over, under = bias.idxmax(), bias.idxmin()
             results.append(
                 CheckResult(
@@ -269,16 +418,19 @@ class CalibrationParityCheck(_RegressionFairnessCheck):
                     detail=(
                         f"{attr}: prediction bias spans {bias.min():,.2f} ({under}, "
                         f"under-predicted) to {bias.max():,.2f} ({over}, over-predicted) "
-                        f"— {gap:.1%} of the overall actual mean {overall_actual:,.2f}{note}"
+                        f"— {gap:.1%} of the overall actual mean "
+                        f"{overall_actual:,.2f}{weighted}{note}{verdict.note}"
                     ),
-                    blocking=self.blocking,
+                    blocking=verdict.blocking,
                     metadata={
                         "protected_attr": attr,
                         "relative_gap": round(gap, 4),
                         "threshold": self.config.calibration_threshold,
+                        "exposure_weighted": bool(weighted),
                         "group_bias": {str(k): round(v, 4) for k, v in bias.items()},
                         "most_over_predicted": str(over),
                         "most_under_predicted": str(under),
+                        **verdict.metadata,
                     },
                 )
             )
@@ -291,6 +443,89 @@ class CalibrationParityCheck(_RegressionFairnessCheck):
                 self.blocking,
             )
         ]
+
+    def plot(self, context, results=None, ax=None):
+        """Actual over expected, by predicted band, per group.
+
+        A mean residual is one number for the whole book, and a book is not
+        uniform. RMSE says "wrong by 25,000"; this says "under-priced in the
+        top decile, and only for one group" — which is the difference between
+        a model that needs recalibrating and a model that needs withdrawing.
+
+        Bands are quantiles of the prediction, shared across groups, so the
+        lines are comparable. A ratio above 1 means the realised outcome
+        exceeded the prediction: under-priced.
+        """
+        from ..plots import require_plotting, worst_result
+        from ..plots.style import RULE, caption, categorical, markers, new_axes
+
+        require_plotting()
+        if context.protected_df is None or context.y_true is None:
+            return None
+        results = self.run(context) if results is None else results
+        finding = worst_result(results, "relative_gap")
+        if finding is None:
+            return None
+
+        attribute = finding.metadata["protected_attr"]
+        protected = group_series(context.protected_df, attribute, self.config.min_group_size)
+        if protected is None:
+            return None
+        scored = list(finding.metadata["group_bias"])
+
+        y_true = np.asarray(context.y_true, dtype=float)
+        y_pred = np.asarray(context.y_pred, dtype=float)
+        weights = self._weights(context)
+
+        # Quantile bands over the whole book, not per group: per-group edges
+        # would put a different slice of business on each x position and the
+        # lines would not be comparable, which is the entire point of the plot.
+        # Cut on exposure, and every ratio below is exposure-weighted, so the
+        # chart and the scalar in the report are the same measurement.
+        n_bands = min(10, max(3, len(y_pred) // (5 * max(len(scored), 1))))
+        edges = band_edges(y_pred, n_bands, weights)
+        if len(edges) < 3:
+            return None
+        band = assign_bands(y_pred, edges)
+
+        ax = new_axes(ax)
+        ax.axhline(1.0, color=RULE, linewidth=1.2, linestyle="--", zorder=1)
+
+        centres = np.arange(len(edges) - 1)
+        for colour, marker, value in zip(categorical(len(scored)), markers(len(scored)), scored):
+            mask = np.asarray(protected.astype(str) == value)
+            ratios, positions = [], []
+            for b in centres:
+                cell = mask & (band == b)
+                # A band a group barely occupies produces a ratio driven by
+                # two policies. Leave the gap in the line rather than draw it.
+                if cell.sum() < 5:
+                    continue
+                ratio = actual_over_expected(y_true[cell], y_pred[cell], weights[cell])
+                if not np.isfinite(ratio):
+                    continue
+                ratios.append(ratio)
+                positions.append(b)
+            if positions:
+                ax.plot(positions, ratios, color=colour, marker=marker, label=str(value), zorder=2)
+
+        ax.set_xticks(centres)
+        ax.set_xticklabels([f"{edges[b]:,.0f}–\n{edges[b + 1]:,.0f}" for b in centres], fontsize=8)
+        # Keep break-even inside the frame even when no band comes near it —
+        # a chart cropped to the data hides how far off the whole book is.
+        low, high = ax.get_ylim()
+        ax.set_ylim(min(low, 0.95), max(high, 1.05))
+        ax.set_xlabel("predicted value, by band")
+        ax.set_ylabel("actual ÷ expected")
+        ax.set_title(f"Actual against expected by band, split on {attribute}")
+        ax.legend(loc="best")
+        caption(
+            ax,
+            "the dashed line is break-even. Above it the outcome beat the prediction "
+            "(under-predicted);\nbelow it the prediction was too high. A group drifting "
+            "in one band only is a segment problem.",
+        )
+        return ax
 
 
 class LossRatioParityCheck(_RegressionFairnessCheck):
@@ -348,21 +583,42 @@ class LossRatioParityCheck(_RegressionFairnessCheck):
                 )
             ]
 
+        weights = self._weights(context)
+        weighted = _exposure_note(context)
         ratio = np.full(len(y_pred), np.nan)
         ratio[positive] = y_pred[positive] / expected[positive]
-        overall = float(np.nanmean(ratio))
+        overall = weighted_mean(ratio[positive], weights[positive])
         results = []
 
         def group_ratio(mask):
-            selected = ratio[mask & positive]
-            return float(np.mean(selected)) if selected.size else float("nan")
+            cell = mask & positive
+            return weighted_mean(ratio[cell], weights[cell]) if cell.any() else float("nan")
 
         for attr, ratios, note in self._per_group(context, group_ratio):
             ratios = ratios.dropna()
             if len(ratios) < 2:
                 continue
             gap = _relative_gap(ratios, overall)
-            flag = "LOSS_RATIO_RISK" if gap > self.config.loss_ratio_threshold else "OK"
+            # Rows with a non-positive expected loss carry no margin ratio, so
+            # they are NaN here. The gap helper drops non-finite values per
+            # draw, which is the same treatment the point estimate gives them.
+            interval = self._gap_interval(
+                context,
+                attr,
+                list(ratios.index),
+                lambda positions: ratio[positions],
+                lambda positions, values, w: weighted_mean(
+                    values[np.isfinite(values)], w[np.isfinite(values)]
+                ),
+            )
+            verdict = self.uncertainty.verdict(
+                interval,
+                self.config.loss_ratio_threshold,
+                point=gap,
+                risk_flag="LOSS_RATIO_RISK",
+                blocking=self.blocking,
+            )
+            flag = verdict.flag
             hi, lo = ratios.idxmax(), ratios.idxmin()
             results.append(
                 CheckResult(
@@ -373,17 +629,19 @@ class LossRatioParityCheck(_RegressionFairnessCheck):
                         f"{attr}: premium-to-expected-loss ratio spans {ratios.min():.3f} "
                         f"({lo}) to {ratios.max():.3f} ({hi}) — {gap:.1%} of the overall "
                         f"ratio {overall:.3f}; {hi} carries the higher margin over its "
-                        f"own expected cost{note}"
+                        f"own expected cost{weighted}{note}{verdict.note}"
                     ),
-                    blocking=self.blocking,
+                    blocking=verdict.blocking,
                     metadata={
                         "protected_attr": attr,
                         "relative_gap": round(gap, 4),
                         "threshold": self.config.loss_ratio_threshold,
+                        "exposure_weighted": bool(weighted),
                         "group_loss_ratio": {str(k): round(v, 4) for k, v in ratios.items()},
                         "highest_margin_group": str(hi),
                         "lowest_margin_group": str(lo),
                         "rows_ignored": n_dropped,
+                        **verdict.metadata,
                     },
                 )
             )
@@ -397,6 +655,80 @@ class LossRatioParityCheck(_RegressionFairnessCheck):
                 self.blocking,
             )
         ]
+
+    def plot(self, context, results=None, ax=None):
+        """Charged premium against expected loss, one point per policy.
+
+        The scalar says the margin gap is 18%. It cannot say *where*. A
+        uniform vertical offset between two groups is a flat loading — argue
+        about it, but it is one decision. A fan that opens at the top of the
+        book is a gap concentrated in high-value risks, which is a different
+        finding with a different remedy.
+
+        The 45° line is break-even: on it, premium equals expected loss.
+        """
+        from ..plots import require_plotting, worst_result
+        from ..plots.style import RULE, caption, categorical, markers, new_axes
+
+        require_plotting()
+        if context.protected_df is None or context.expected_loss is None:
+            return None
+        results = self.run(context) if results is None else results
+        finding = worst_result(results, "relative_gap")
+        if finding is None:
+            return None
+
+        attribute = finding.metadata["protected_attr"]
+        protected = group_series(context.protected_df, attribute, self.config.min_group_size)
+        if protected is None:
+            return None
+        scored = list(finding.metadata["group_loss_ratio"])
+
+        expected = np.asarray(context.expected_loss, dtype=float)
+        y_pred = np.asarray(context.y_pred, dtype=float)
+        positive = expected > 0
+        if not positive.any():
+            return None
+
+        ax = new_axes(ax, figsize=(6.0, 5.2))
+        ceiling = float(max(expected[positive].max(), y_pred[positive].max()))
+        ax.plot([0, ceiling], [0, ceiling], color=RULE, linewidth=1.4, linestyle="--", zorder=1)
+
+        for colour, marker, value in zip(categorical(len(scored)), markers(len(scored)), scored):
+            cell = positive & np.asarray(protected.astype(str) == value)
+            if not cell.any():
+                continue
+            ratio = finding.metadata["group_loss_ratio"][value]
+            ax.scatter(
+                expected[cell],
+                y_pred[cell],
+                color=colour,
+                marker=marker,
+                s=18,
+                alpha=0.55,
+                linewidth=0,
+                label=f"{value} — mean ratio {ratio:.2f}",
+                zorder=2,
+            )
+            # The group's own mean ratio as a ray from the origin: the line the
+            # scalar in the report describes, drawn over the points it came from.
+            ax.plot(
+                [0, ceiling], [0, ceiling * ratio], color=colour, linewidth=1.1, alpha=0.9, zorder=3
+            )
+
+        ax.set_xlim(0, ceiling * 1.02)
+        ax.set_ylim(0, max(ceiling, float(y_pred[positive].max())) * 1.02)
+        ax.set_xlabel("expected loss")
+        ax.set_ylabel("predicted premium")
+        ax.set_title(f"Premium against expected loss, split on {attribute}")
+        ax.legend(loc="upper left")
+        caption(
+            ax,
+            "the dashed 45° line is break-even; each group's ray is its mean margin.\n"
+            "Parallel rays are a flat loading. Diverging rays are a gap that grows with "
+            "the size of the risk.",
+        )
+        return ax
 
 
 __all__ = [

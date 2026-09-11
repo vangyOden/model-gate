@@ -484,10 +484,11 @@
     <a class="wordmark" href="#top">
       <span class="mark" aria-hidden="true"></span>
       BDP Model Gate
-      <span class="version">0.4.1</span>
+      <span class="version">0.6.0</span>
     </a>
     <nav>
       <a href="#start">Getting started</a>
+      <a href="#report" class="optional">The report</a>
       <a href="#checks" class="optional">Checks</a>
       <a href="#coverage" class="optional">Coverage</a>
       <a href="https://github.com/vanjy-eng/model-gate">GitHub</a>
@@ -501,10 +502,32 @@
     <span class="eyebrow">Pre-deployment ML governance</span>
     <h1>Every model gets a verdict before it ships.</h1>
     <p class="lede">
-      Fairness, performance, compliance and security checks that run
+      Validation, fairness, performance, compliance and security checks that run
       <strong>after training and before promotion</strong> — reduced to one
       status your pipeline can branch on. Built for decisions that answer to
       someone: credit scoring, underwriting, pricing and claims.
+    </p>
+    <p class="lede" style="margin-top:.7rem;">
+      Including the measures a pricing review actually uses:
+      <strong>exposure-weighted actual-versus-expected by decile</strong>, the
+      Lorenz Gini against the ceiling your book allows, filed monotonicity
+      constraints checked by partial dependence, and how much of the book moves
+      when a tariff replaces its incumbent.
+    </p>
+    <p class="lede" style="margin-top:.7rem;">
+      Every threshold now carries a <strong>confidence interval</strong>, and
+      where it sits decides the verdict: a finding, a clean pass, or
+      <em>the data cannot say</em> — which is a governance conversation rather
+      than a broken build. On a floor set where a model actually sits, that
+      took a gate from disagreeing with itself on nine of ten random halvings
+      of the same data to none.
+    </p>
+    <p class="lede" style="margin-top:.7rem;">
+      And it tests the generative side-car bolted to your model for
+      <strong>indirect prompt injection</strong> — untrusted text arriving as a
+      claim note or a customer email rather than as a chat message, which is the
+      attack a regulated pipeline actually faces. Canary-based, so a leak is
+      proof rather than a guess.
     </p>
 
     <div class="cta-row">
@@ -540,9 +563,32 @@
           <span class="exit">exit 1</span>
         </div>
         <h3>Hard fail</h3>
-        <p>A performance, compliance or security check failed. The build stops and the report says which.</p>
+        <p>A validation, performance, compliance or security check failed. The build stops and the report says which.</p>
       </div>
     </div>
+  </section>
+
+  <section class="wrap divider" id="report">
+    <span class="eyebrow">What the reviewer gets</span>
+    <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">
+      NEEDS_REVIEW hands the decision to a person.
+    </h2>
+    <p class="prose" style="margin-top:.9rem;">
+      So hand them a page, not a blob. <code>report.to_html("gate-report.html")</code>
+      writes one self-contained file: the verdict in plain words, every finding with
+      its evidence, and a chart beside each number whose <em>shape</em> is what has to
+      be judged — a reliability curve, a threshold sweep showing whether the verdict
+      survives a different cutoff, an actual-versus-expected curve showing whether the
+      book is short everywhere or only in its top decile.
+    </p>
+    <p class="prose" style="margin-top:.7rem;">
+      No JavaScript, no stylesheet, no font, nothing fetched from anywhere. It opens
+      offline years later and prints clean, because that is what a governance record
+      has to do.
+    </p>
+    <p style="margin-top:1.1rem;">
+      <a class="btn btn-ghost" href="docs/reference/reports/">See what is in the report</a>
+    </p>
   </section>
 
   <section class="wrap divider" id="start">
@@ -566,14 +612,14 @@
       </a>
       <a class="quad-card" href="docs/examples/">
         <h3>Examples</h3>
-        <p>Five runnable notebooks: binary, multiclass, regression, PyTorch, boosters.</p>
+        <p>Eight runnable notebooks: binary, multiclass, regression, PyTorch, boosters, reports, insurance pricing, generative side-cars.</p>
         <span class="go">Open the notebooks →</span>
       </a>
     </div>
   </section>
 
   <section class="wrap divider" id="checks">
-    <span class="eyebrow">Thirteen checks, four categories</span>
+    <span class="eyebrow">Twenty-six checks, five categories</span>
     <h2 style="font-size:clamp(1.5rem,3vw,2rem);margin-top:.6rem;">What gets checked</h2>
     <p class="prose" style="margin-top:.9rem;">
       Optional inputs degrade rather than fail — omit protected attributes and
@@ -584,6 +630,20 @@
     <div class="checks">
       <article class="check">
         <div class="check-top">
+          <h3>Validation</h3>
+          <span class="tag blocking">Blocking</span>
+        </div>
+        <ul>
+          <li><code>target_leakage</code> — does one column do what the whole model does?</li>
+          <li><code>split_overlap</code> — has the model already seen these rows?</li>
+          <li><code>validation_strategy</code> — out-of-time holdout, or a random split?</li>
+          <li><code>feature_contract</code> — the right columns, in the right order</li>
+          <li><code>feature_drift</code> — does validation still look like training?</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
           <h3>Fairness</h3>
           <span class="tag review">Needs review</span>
         </div>
@@ -592,6 +652,8 @@
           <li><code>disparate_impact</code> — demographic parity</li>
           <li><code>shap_subgroup_gap</code> — per-group contribution gaps</li>
           <li><code>counterfactual_flip</code> — prediction shift on attribute flip</li>
+          <li><code>equalised_odds</code> — equal opportunity, and the wider TPR/FPR gap</li>
+          <li><code>subgroup_calibration</code> — does a score mean the same for every group?</li>
         </ul>
       </article>
 
@@ -614,9 +676,24 @@
           <span class="tag blocking">Blocking</span>
         </div>
         <ul>
-          <li>Score on a metric you choose — twelve built in, or your own callable</li>
+          <li>Score on a metric you choose — thirteen built in, or your own callable</li>
+          <li><code>calibration</code> — do the stated probabilities match reality?</li>
+          <li>Every threshold with a <strong>confidence interval</strong>, and <code>UNCERTAIN</code> when the data cannot decide</li>
           <li>p95 latency against a benchmark run</li>
           <li>Cost per inference</li>
+        </ul>
+      </article>
+
+      <article class="check">
+        <div class="check-top">
+          <h3>Pricing</h3>
+          <span class="tag blocking">Blocking</span>
+        </div>
+        <ul>
+          <li><code>actual_vs_expected</code> — the rate level, then the same ratio decile by decile</li>
+          <li><code>risk_discrimination</code> — the Lorenz Gini, against the ceiling this book allows</li>
+          <li><code>monotonicity</code> — does premium still rise with prior claims?</li>
+          <li><code>prediction_dislocation</code> — who moves, and by how much</li>
         </ul>
       </article>
 
@@ -640,7 +717,8 @@
         <ul>
           <li><code>adversarial_robustness</code> — gradient-directed or random perturbation</li>
           <li><code>pii_leakage</code> — raw identifiers in feature columns</li>
-          <li><code>prompt_injection</code> — for any generative side-car</li>
+          <li><code>prompt_injection</code> — a categorised corpus, on the direct <em>and</em> indirect surfaces</li>
+          <li><code>report_injection</code> — instruction-shaped text this report would carry onward</li>
         </ul>
       </article>
 
@@ -665,7 +743,8 @@
       Nothing here imports a deep-learning framework. Pass an estimator with
       <code>.predict()</code>, or a plain <code>fn(DataFrame) -&gt; array</code> —
       the boundary is deliberately narrow, so tensor conversion, batching and
-      auth stay in your code.
+      auth stay in your code. The validation checks apply to all three tasks;
+      the fairness suite changes shape with the target.
     </p>
 
     <div class="table-scroll">
@@ -677,17 +756,17 @@
           <tr>
             <td><strong>Binary</strong><br><span class="cell-note">credit, fraud, lapse</span></td>
             <td><code>roc_auc</code>, <code>average_precision</code>, <code>f1</code>, …</td>
-            <td class="cell-note">Demographic parity, proxy, SHAP, counterfactual</td>
+            <td class="cell-note">All three families: parity, equalised odds, subgroup calibration — plus proxy, SHAP, counterfactual</td>
           </tr>
           <tr>
             <td><strong>Multiclass &amp; ordinal</strong><br><span class="cell-note">underwriting decisions</span></td>
             <td><code>quadratic_kappa</code>, <code>ordinal_mae</code>, macro-averaged</td>
-            <td class="cell-note">Parity against a favourable outcome you define</td>
+            <td class="cell-note">All three families, against a favourable outcome you define</td>
           </tr>
           <tr>
             <td><strong>Regression</strong><br><span class="cell-note">pricing, severity, frequency</span></td>
-            <td><code>rmse</code>, <code>mape</code>, <code>poisson_deviance</code>, <code>r2</code></td>
-            <td class="cell-note">Loss-ratio, mean gap, error parity, calibration</td>
+            <td><code>rmse</code>, <code>mape</code>, <code>poisson_deviance</code>, <code>lorenz_gini</code>, <code>r2</code></td>
+            <td class="cell-note">Loss-ratio, mean gap, error parity, calibration — all exposure-weighted</td>
           </tr>
         </tbody>
       </table>
@@ -731,8 +810,10 @@
 
 context = StructuredGateContext(
     model=pricing_model,
-    X=X_val, y_true=realised_loss, y_pred=quoted_premium,
+    X=X_val, y_true=loss_cost, y_pred=quoted_premium,
     protected_df=protected_val,
+    exposure=earned_vehicle_years,    <span class="c-com"># the target is a rate</span>
+    baseline_pred=premium_v3,         <span class="c-com"># what this replaces</span>
     expected_loss=technical_premium,  <span class="c-com"># margin parity</span>
     task=<span class="c-str">"regression"</span>,
 )
@@ -801,9 +882,8 @@ report.to_json(<span class="c-str">"gate_report.json"</span>)
       </div>
     </div>
     <div class="colophon">
-      <span>BDP Model Gate 0.4.1</span>
+      <span>BDP Model Gate 0.6.0</span>
       <span>Maintained by Vangelis Oden</span>
-      <span>Site 0.4.1-alpha</span>
       <span>MIT</span>
     </div>
   </div>

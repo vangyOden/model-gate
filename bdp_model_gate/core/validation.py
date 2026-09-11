@@ -16,13 +16,22 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from .._logging import get_logger
 from ..classes import resolve_favourable, validate_class_order
 from ..exceptions import GateConfigurationError, GateValidationError
+from ..injection import CORPUS
 from ..model import ModelAdapter
 from ..task import REGRESSION, resolve_task, validate_task
 
 if TYPE_CHECKING:
     from .context import StructuredGateContext
+
+logger = get_logger("validation")
+
+#: Shorter than this and a canary matches by accident. Four characters of
+#: anything appear somewhere in ordinary prose, and a false leak report is
+#: exactly the confident-wrong-verdict this library exists to avoid.
+MIN_CANARY_LENGTH = 8
 
 
 def validate_structured_context(context: StructuredGateContext) -> None:
@@ -32,10 +41,13 @@ def validate_structured_context(context: StructuredGateContext) -> None:
     _validate_features(context)
     _validate_labels(context)
     _validate_expected_loss(context)
+    _validate_exposure(context)
+    _validate_baseline_pred(context)
     _validate_protected_df(context)
     _validate_model_card(context)
     _validate_performance_inputs(context)
     _validate_generate_fn(context)
+    _validate_canaries(context)
 
 
 def _validate_model(context: StructuredGateContext) -> None:
@@ -155,6 +167,75 @@ def _validate_expected_loss(context: StructuredGateContext) -> None:
         )
 
 
+def _validate_exposure(context: StructuredGateContext) -> None:
+    """Exposure is a weight, so the ways it can be wrong are specific.
+
+    A negative exposure is meaningless; an all-zero column would silently
+    turn every weighted mean into NaN, which would read in the report as
+    "could not be measured" rather than "you passed zeros"; and a NaN weight
+    poisons every total it enters. All three are refused here rather than
+    surfacing as an unexplained skip six checks later.
+    """
+    exposure = getattr(context, "exposure", None)
+    if exposure is None:
+        return
+    arr = np.asarray(exposure)
+    if arr.dtype.kind not in "iuf":
+        raise GateValidationError(f"context.exposure must be numeric, got dtype {arr.dtype}")
+    values = arr.astype(float)
+    if len(values) != len(context.X):
+        raise GateValidationError(
+            f"context.exposure has length {len(values)}, but context.X has "
+            f"{len(context.X)} rows — they must be row-aligned"
+        )
+    if not np.all(np.isfinite(values)):
+        raise GateValidationError(
+            "context.exposure contains NaN or infinite values — a weight that is not a "
+            "number propagates into every exposure-weighted total"
+        )
+    if np.any(values < 0):
+        raise GateValidationError(
+            "context.exposure contains negative values — exposure is a measure of time "
+            "or amount at risk and cannot be below zero"
+        )
+    if float(values.sum()) <= 0:
+        raise GateValidationError(
+            "every context.exposure value is zero, so nothing carries any weight — omit "
+            "exposure entirely if the target is a per-policy total rather than a rate"
+        )
+
+    task = resolve_task(context)
+    if task != REGRESSION:
+        logger.warning(
+            "context.exposure was supplied but the task resolved to %r. Exposure weighting "
+            "applies to the regression metrics and the actuarial checks; the "
+            "classification checks ignore it, and the report says so.",
+            task,
+        )
+
+
+def _validate_baseline_pred(context: StructuredGateContext) -> None:
+    baseline = getattr(context, "baseline_pred", None)
+    if baseline is None:
+        return
+    arr = np.asarray(baseline)
+    if arr.dtype.kind not in "iuf":
+        raise GateValidationError(
+            f"context.baseline_pred must be numeric, got dtype {arr.dtype} — it is the "
+            "incumbent model's prediction for the same rows"
+        )
+    if len(arr) != len(context.X):
+        raise GateValidationError(
+            f"context.baseline_pred has length {len(arr)}, but context.X has "
+            f"{len(context.X)} rows — they must be row-aligned"
+        )
+    if not np.all(np.isfinite(arr.astype(float))):
+        raise GateValidationError(
+            "context.baseline_pred contains NaN or infinite values, so the relative "
+            "change against it is undefined"
+        )
+
+
 def _validate_protected_df(context: StructuredGateContext) -> None:
     if context.protected_df is None:
         return
@@ -195,7 +276,68 @@ def _validate_performance_inputs(context: StructuredGateContext) -> None:
 
 
 def _validate_generate_fn(context: StructuredGateContext) -> None:
-    if context.generate_fn is None:
+    for name in ("generate_fn", "inject_fn", "judge_fn"):
+        fn = getattr(context, name, None)
+        if fn is not None and not callable(fn):
+            raise GateValidationError(f"context.{name} must be callable, got {type(fn).__name__}")
+
+
+def _validate_canaries(context: StructuredGateContext) -> None:
+    """Canaries are the one input whose *contents* decide whether a check works.
+
+    Three ways to get them wrong, all of which produce a confidently wrong
+    verdict rather than an error, which is why they are refused here:
+
+    A **short** canary matches by accident. `"NIN"` appears in ordinary prose
+    and would report a leak on every response.
+
+    A canary that appears in the **corpus** cannot distinguish a leak from the
+    model quoting the attack back at you. The corpus is fixed and shipped, so
+    this is checkable rather than a matter of care.
+
+    A **blank** one matches everything.
+    """
+    canaries = getattr(context, "canaries", None)
+    if canaries is None:
         return
-    if not callable(context.generate_fn):
-        raise GateValidationError("context.generate_fn must be callable")
+    if isinstance(canaries, (str, bytes)):
+        raise GateValidationError(
+            "context.canaries must be a sequence of strings, not a single string — "
+            "a bare string would be iterated character by character, and every "
+            "response contains the letter 'e'"
+        )
+
+    values = list(canaries)
+    if not values:
+        raise GateValidationError(
+            "context.canaries is empty — omit it entirely rather than passing an "
+            "empty sequence, so the report says the leak checks could not be judged"
+        )
+
+    for canary in values:
+        if not isinstance(canary, str):
+            raise GateValidationError(
+                f"every context.canaries entry must be a string, got {type(canary).__name__}"
+            )
+        stripped = canary.strip()
+        if not stripped:
+            raise GateValidationError(
+                "context.canaries contains a blank entry, which matches everything"
+            )
+        if len(stripped) < MIN_CANARY_LENGTH:
+            raise GateValidationError(
+                f"context.canaries entry {canary!r} is shorter than "
+                f"{MIN_CANARY_LENGTH} characters. A short canary matches by accident "
+                "and would report a leak on an innocent response — plant something "
+                "distinctive, such as a fake policy number or a sentence from the "
+                "system prompt"
+            )
+
+    corpus_text = "\n".join(attack.payload for attack in CORPUS).lower()
+    for canary in values:
+        if canary.strip().lower() in corpus_text:
+            raise GateValidationError(
+                f"context.canaries entry {canary!r} appears in the built-in injection "
+                "corpus, so a response quoting the attack back would be indistinguishable "
+                "from a real leak. Plant a canary of your own instead"
+            )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdp-model-gate"
-version = "0.4.2"
+version = "0.6.0"
 description = "Automated pre-deployment ML model governance gate: fairness, performance, compliance, and security checks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -45,23 +45,64 @@ structured = [
     # which raised its own floor to Python 3.11 — above our requires-python.
     "shap>=0.48,<0.50",
 ]
+plots = [
+    # seaborn's own requirements are matplotlib, numpy and pandas — no scipy —
+    # so given numpy and pandas already ship, this costs a few MB over bare
+    # matplotlib. Static SVG rather than plotly or altair: a gate report is an
+    # archival record that gets printed, emailed and read years later, and
+    # anything needing JavaScript at render time breaks all three.
+    "matplotlib>=3.6,<4.0",
+    "seaborn>=0.13,<0.15",
+]
 yaml = [
     "pyyaml>=6.0,<7.0",
 ]
 toml = [
     "tomli>=2.0,<3.0; python_version < '3.11'",
 ]
+# Linters and the type checker, pinned **exactly** and kept out of `dev`.
+#
+# An unpinned linter changes its verdict on unchanged code, so a release
+# months from now goes red on a pull request that touched nothing near the
+# complaint. That has a real cost beyond the confusion: the reflex it teaches
+# is to widen the ignore list.
+#
+# Separate from `dev` because the CI matrix installs `dev` on five
+# interpreters and only ever runs pytest with it — the linters run once, on
+# one version, in one job. Pair with `constraints-lint.txt` for the transitive
+# set: mypy's answers depend on the stubs it resolves, so `pandas-stubs`
+# moving can turn a clean run red just as surely as mypy moving can.
+lint = [
+    "ruff==0.16.4",
+    "mypy==1.20.2",
+    "pandas-stubs",
+    "types-PyYAML>=6.0,<7.0",
+]
 dev = [
     "pytest>=7.0,<9.0",
     "pytest-cov>=4.1,<6.0",
     "build>=1.0,<2.0",
-    "mypy>=1.8,<2.0",
-    "ruff>=0.4,<1.0",
-    "pandas-stubs",
     "hypothesis>=6.100,<7.0",
-    "mutmut>=3.0,<4.0",
+    "matplotlib>=3.6,<4.0",
+    "seaborn>=0.13,<0.15",
     "pyyaml>=6.0,<7.0",
-    "types-PyYAML>=6.0,<7.0",
+]
+# Mutation testing, and its own extra for two reasons.
+#
+# `scripts/mutmut_decision_surface.py` reaches into mutmut's internals to
+# prune the operator table, so the version has to be exact — a range would let
+# a minor release rename the table and turn the pruning into a silent no-op.
+#
+# And an exact pin cannot live in `dev`: **mutmut 3.7 requires Python 3.10**,
+# while this package supports 3.9, so pinning it there breaks `pip install
+# -e ".[dev]"` on the oldest interpreter in the matrix. The range that used to
+# be there resolved to 3.3.1 on 3.9 and installed fine, which is why the
+# problem arrived with the pin rather than with the dependency.
+#
+# Nothing in the test matrix needs it: mutation testing runs in one advisory
+# job, on one interpreter, and locally when someone is hardening an area.
+mutation = [
+    "mutmut==3.7.0",
 ]
 
 [project.urls]
@@ -103,20 +144,34 @@ also_copy = ["tests/", "pyproject.toml"]
 # Mutating these buys little: the CLI is argument plumbing the integration
 # tests already cover end to end, the unstructured module is NotImplementedError
 # stubs, and logging setup has no behaviour to get wrong.
+#
+# reporting.py is excluded for a different reason and a weaker one: it is HTML
+# assembly, so most mutants are cosmetic string edits, and the properties that
+# do matter (self-contained, escaped, degrades) are asserted in
+# tests/test_reporting.py, which is not in the fast selection below. Including
+# it would sink the score without producing a single actionable survivor.
+# The *plots* are mutated, because a chart disagreeing with its own finding is
+# exactly the failure this tooling exists to catch.
 do_not_mutate = [
     "*/cli.py",
     "*/_logging.py",
     "*/unstructured/*",
+    "*/reporting.py",
 ]
 
 # The full suite is the wrong selection here: the notebook-scale fixtures make
-# every mutant slow. These four files are fast and assert on values rather than
-# on "something was returned", which is what actually kills mutants.
+# every mutant slow. These files are fast and assert on values rather than on
+# "something was returned", which is what actually kills mutants.
+#
+# test_plots.py earns its ~1s because it reads values back off the Axes and
+# asserts them against the check's own metadata — the one invariant that keeps
+# a chart from contradicting the number printed beside it.
 pytest_add_cli_args_test_selection = [
     "tests/test_known_answers.py",
     "tests/test_invariants.py",
     "tests/test_properties.py",
     "tests/test_not_applicable.py",
+    "tests/test_plots.py",
 ]
 pytest_add_cli_args = ["-x", "-q", "--no-header", "--no-cov", "-p", "no:cacheprovider"]
 

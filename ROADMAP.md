@@ -3,196 +3,266 @@
 Planned work, with enough detail that decisions already taken do not get
 re-argued. Shipped releases are in [`CHANGELOG.md`](CHANGELOG.md).
 
-Current release: **0.4.2**.
+## How each release is delivered
+
+Every entry below ships as a complete slice, not just code:
+
+1. **Its own branch**, named in the entry.
+2. **Implementation**, with the tests the 0.4.2 guards now demand — known
+   answers, invariants, and a place in the model-family matrix.
+3. **Examples**: a new notebook, or updates to the existing ones, executed via
+   `examples/run_all.sh` so the committed outputs are true.
+4. **Web**: the affected pages under `web/docs/`, and the landing page — its
+   version stamp every time, its checks grid and capability claims whenever
+   those change. The site is part of the release, not a follow-up; see the
+   checklist in [`CONTRIBUTING.md`](CONTRIBUTING.md#the-site-ships-with-the-release).
+   `tests/test_package.py` enforces the version stamp and check coverage.
+5. **A pull request to `main`**, with CI and the docs build green before
+   merge. Both are conventions rather than enforcement today — see
+   [Before the next release](#before-the-next-release--the-repository-itself),
+   which is about fixing that.
+
+A release is not done when the code works. It is done when someone who has
+never seen it can find it, read why it exists, and run it.
+
+Current release: **0.6.0**. Next: **0.6.1**.
+
+> **This file tracks what should happen.** What already happened lives in
+> [`CHANGELOG.md`](CHANGELOG.md), and shipped entries are removed from here
+> rather than marked done. The only release appearing in both is the one
+> currently being built.
 
 ---
 
-## 0.4.1-alpha — Documentation site
+## Before the next release — the repository itself
 
-Tracked separately from the library, which is already at 0.4.1 on PyPI. The
-`-alpha` marks the **site**, not the package: it lives in `web/`, is not yet
-deployed, and its structure will move before it is announced.
+Not a release, and not code: three findings about this repository's own
+configuration, checked against the GitHub API on 2026-09-09. The first one is
+live.
 
-### Why
+### `main-lock` has never protected `main`
 
-`README.md` reached 604 lines and 15 top-level sections. Someone who wants
-regression scrolls past binary classification, metric selection, custom
-checks and plugins to reach it. Splitting that up is the actual win; the site
-is the means.
-
-### Audience
-
-External — banks, insurers and any organisation with a working data-science
-team. Two consequences:
-
-- The generic quickstart leads. NDPA/NDPR defaults are presented as
-  **configurable defaults**, not the product's premise, so a reader in
-  another regime sees themselves in the hero.
-- Insurance use cases are the worked examples rather than the framing.
-
-### Shape: landing + docs, as pandas does it
-
-Two builds under one deploy, mirroring `pandas.pydata.org` (a hand-built
-marketing root, with Sphinx docs beneath it):
+The ruleset exists, is `active`, and applies to nothing. Its ref condition is:
 
 ```
-web/
-  landing/index.html    hand-built landing page, deployed at /
-  mkdocs.yml            MkDocs Material, deployed at /docs/
-  docs/                 the guide, reference and rendered notebooks
-  requirements.txt      pinned docs toolchain
+refs/heads/"main"
 ```
 
-- **MkDocs Material**, not Sphinx: the content is already Markdown, and the
-  API is 53 public objects — not the scale where intersphinx and autodoc
-  earn their configuration cost.
-- **`mkdocstrings`** generates the API reference from the docstrings that
-  already cover 89% of the public API, so it cannot drift from the source.
-- **`mkdocs-jupyter`** renders the five executed notebooks as pages, so
-  `examples/run_all.sh` keeps them honest and there is no second copy.
-- Multi-version docs (`mike`) deferred to 1.0 — pre-1.0 and moving this
-  fast, one accurate "latest" beats five stale versions.
+Those double quotes are literal characters in an fnmatch pattern, so it can
+only ever match a branch named `"main"` — quotes included — and the branch is
+called `main`. `GET /repos/{owner}/{repo}/rules/branches/main` returns `[]`,
+and the ruleset reports `current_user_can_bypass: "never"`, so the empty
+answer is not bypass permission masking the rules. There are none.
 
-### Known risk
+Which means, right now: **direct pushes to `main` are not blocked,
+force-pushes are not blocked, and no review is required.** Every release so
+far went through a PR by convention, not by enforcement.
 
-A site multiplies the surface that can go stale, and this project has form:
-a notebook shipped two minor versions behind, and twice a notebook's prose
-contradicted its own output. The generated API reference and rendered
-notebooks are structurally protected. **Prose code blocks are not** —
-executing them in CI is the open question, deferred to the 0.4.2 robustness
-work rather than decided here.
+> A guard with a hole in it is worse than none, because it is trusted. That
+> sentence is already in `CONTRIBUTING.md` about the version-stamp guard, and
+> it applies here to `CONTRIBUTING.md` itself, which states that "direct
+> pushes are blocked by a ruleset". They are not. Fix the ruleset and the
+> sentence becomes true; until then it is a false claim in the contributor
+> documentation.
+
+Fix: change the condition to `refs/heads/main` — or better `~DEFAULT_BRANCH`,
+which cannot be typo'd.
+
+### There is no required-status-check rule, and that is the one that matters
+
+Even with the pattern fixed, `main-lock` carries `deletion`,
+`non_fast_forward`, `creation`, `update`, `pull_request`, `code_scanning` and
+`code_quality` — and **no `required_status_checks`**. So a PR could be merged
+with a red matrix.
+
+That is not hypothetical: v0.3.0 and v0.3.1 were both tagged on commits with a
+red Python 3.9 job, and both tags had to be withdrawn. Requiring a PR stops
+nobody from merging a broken one.
+
+Add `required_status_checks` naming the jobs, exactly:
+
+- `Lint and type-check`
+- `Test (Python 3.9)` … `Test (Python 3.13)`
+- `Test (core install only)`
+- `Build distribution`
+- `Build site`
+
+Deliberately **not** `Mutation testing (advisory)`. It is `continue-on-error`
+and time-boxed; requiring it would make a 25-minute advisory job a merge
+blocker.
+
+### Two rules that cannot currently be satisfied
+
+- **`require_code_owner_review: true`, and there is no `CODEOWNERS` file.**
+  Either add one or drop the rule; a rule that names a file that does not
+  exist is another guard that reads as protection and is not.
+- **`required_approving_review_count: 1` on a single-maintainer repository.**
+  GitHub will not let an author approve their own pull request, so this rule
+  can only ever be satisfied by a second person or by an admin bypass — and a
+  rule whose normal path is "bypass it" trains the reflex that defeats every
+  other rule.
+
+  The honest position for now: **required status checks are the rule that
+  protects this repository; required reviews are theatre until there is a
+  second maintainer.** Keep the `pull_request` rule for the merge-method and
+  thread-resolution settings, set the approval count to 0, and raise it the
+  day someone else has commit rights. Record the decision either way, because
+  the alternative is discovering it at 11pm during a release.
+
+### The tag ruleset is disabled, and would break tagging if enabled
+
+`release tags` is `enforcement: disabled`, which is why `v0.5.3` and `v0.5.4`
+pushed without complaint. Its rules are `deletion`, `non_fast_forward` and
+`creation` against `~ALL` tags with no bypass actors — and `creation` on
+`~ALL` forbids creating *any* tag, including the release tags the ruleset is
+named for.
+
+Fix before enabling: scope the condition to `refs/tags/v*`, keep `deletion`
+and `non_fast_forward`, drop `creation`. That gives what the name suggests and
+prevents a repeat of the withdrawn v0.3.0/v0.3.1 tags.
+
+### Checklist
+
+- [ ] `main-lock` condition -> `~DEFAULT_BRANCH`
+- [ ] `main-lock` gains `required_status_checks` with the seven jobs above
+- [ ] Decide `required_approving_review_count` (0 for now) and
+      `require_code_owner_review` (drop, or add `CODEOWNERS`)
+- [ ] `release tags`: scope to `refs/tags/v*`, drop `creation`, then enable
+- [ ] Restore the plain "direct pushes are blocked" wording in
+      `CONTRIBUTING.md` once the first two boxes are ticked — it has been
+      softened to the truth in the meantime rather than left as a false claim
 
 ---
 
-## 0.4.2 — Robustness of the checks themselves ✅
+## 0.6.1 — Release automation, in two stages
 
-**Shipped.** See [`CHANGELOG.md`](CHANGELOG.md) for detail. The suite went from
-167 to 256 tests across five new files: known-answer, metamorphic invariant,
-model-family matrix, property-based, and skip-reason coverage — plus an autouse
-`CHECK_ERROR` guard and advisory mutation testing.
+**Branch:** `feat/release-automation`
 
-Two more bugs surfaced while building it, both found by the new tests rather
-than by inspection: `shap_gap_threshold` was absolute where it needed to be
-relative, and subsampling selected rows by position, so sorting a CSV could
-change a verdict.
+Publishing is manual. Two of the silent failures this project has shipped were
+caught *only* by installing the published artifact, and v0.3.0 and v0.3.1 were
+both tagged on commits with a red Python 3.9 job. Fitting, for a tool that
+exists to gate deploys.
 
-Still open from the original plan:
+### The shape: publish a candidate, then promote it
 
-- **A mutation kill-rate floor.** First measured baseline is **35.6%**
-  (1118 killed of 3139 with a verdict, from 3430 generated). The job stays
-  advisory until that is stable across runs, then
-  `mutation_report.py --min-kill-rate` turns it into a threshold.
-
-  Getting there took two false starts worth recording. mutmut copies the
-  source into `mutants/` and runs the tests from there, so a partial copy left
-  `bdp_model_gate` an incomplete package whose imports silently fell back to
-  the installed one — every mutant survived, which looks like a catastrophic
-  result but means nothing ran. And `mutmut results` lists **only survivors**,
-  so counting statuses from it yields a 0% kill rate regardless of the truth.
-  `scripts/mutation_report.py` now parses the run's own tally and fails when
-  too few mutants got a verdict, so the job cannot go green having done
-  nothing.
-
-- **The survivors themselves.** 2021 of them, concentrated in
-  `structured/fairness` (506), `structured/security` (318) and `metrics`
-  (272). Each is a line the suite does not pin down; the report lists them by
-  module so the next pass has somewhere to start.
-
----
-
-## 0.4.3 — Tooling and CI pinning
-
-Unpinned linters change their verdict on unchanged code, which produces a
-confusing red build months later on an unrelated PR.
-
-1. Pin `ruff` and `mypy` **exactly** (`==`) in a dedicated `lint` extra,
-   separate from `dev`, so lint and test dependencies move independently.
-2. **Reconcile pre-commit with CI.** `.pre-commit-config.yaml` pins ruff
-   `v0.13.2` while CI installs the latest (`0.16.4` at time of writing) — so
-   a developer running pre-commit and CI can disagree *today*. The rev should
-   be derived from the pinned version rather than maintained by hand.
-3. **Scheduled "latest tooling" job** — weekly, non-blocking, running
-   unpinned `ruff`/`mypy` so upgrades surface as a deliberate decision rather
-   than a surprise failure.
-4. Bump `actions/*` past the Node 20 deprecation warnings now appearing in
-   every run.
-5. A constraints file, so a lint run is byte-reproducible.
-
----
-
-## 0.4.4 — Release automation
-
-Publishing is currently manual. Two of the five silent failures were caught
-*only* by installing the published artifact, and 0.3.0 and 0.3.1 were both
-tagged on commits with a red Python 3.9 job — so the release path itself is
-worth gating. Fitting, for a tool that exists to gate deploys.
-
-### Design decisions already made
-
-- **Trigger on the tag, not on merge to `main`.** Not every merge is a
-  release, and tags already mark them. `on: push: tags: ['v*']` means the
-  artifact published is the commit that was tagged, with no drift between
-  "what merged" and "what shipped".
-- **Trusted Publishing (OIDC), not API tokens.** `pypa/gh-action-pypi-publish`
-  with `id-token: write`. No long-lived credential in repo secrets, nothing
-  to rotate or leak.
-- **Protection belongs on a GitHub Environment, not the branch.** Branch
-  protection guards what gets *merged*; an Environment with a required
-  reviewer guards what gets *published*. Both are wanted, but only the
-  Environment stands between a tag and PyPI.
-
-### Pipeline
+Two workflows, two triggers, one artifact.
 
 ```
-tag v* pushed
-  ├─ build        sdist + wheel, then run the test suite against the
-  │               installed artifact rather than the source tree
-  ├─ testpypi     environment: testpypi — no approval
-  ├─ smoke-test   fresh venv, install from TestPyPI, import, run a real gate
-  └─ pypi         environment: pypi — REQUIRED REVIEWER
+STAGE 1 — candidate            trigger: tag v* pushed
+  guard        tag == pyproject version, and CI was green for this exact SHA
+  build        sdist + wheel; suite run against the INSTALLED wheel
+               -> SHA256SUMS recorded, dists uploaded as a run artifact
+  testpypi     environment: testpypi, no approval          -> TestPyPI
+  smoke        fresh venv, install FROM TestPyPI, run a real gate
+
+        ... a human tests the candidate, for as long as that takes ...
+
+STAGE 2 — promotion            trigger: GitHub Release published
+  fetch        download stage 1's dists for this tag; RE-VERIFY SHA256
+  pypi         environment: pypi, REQUIRED REVIEWER        -> PyPI
 ```
 
-### Guards to build in
+### Why two workflows rather than one with an approval gate
+
+The obvious design is a single workflow whose last job waits on a required
+reviewer. Three reasons not to.
+
+**1. Least privilege by construction, not by approval.** Trusted Publishing
+binds a publisher to a specific *workflow filename* plus environment. Register
+PyPI's publisher against `release-promote.yml` **only**, and a tag push becomes
+structurally incapable of reaching PyPI: no credential for it exists in that
+workflow. In the single-workflow design the capability is present on every tag
+push and held back by a person clicking the right button.
+
+For a library whose entire purpose is stopping the wrong thing reaching
+production, "it cannot" beats "someone must not".
+
+**2. Promotion is a decision, and decisions need a record.** Publishing the
+GitHub Release is the human act, and the release notes plus the environment
+approval are the audit trail. A pending deployment inside a workflow run is
+not a record anyone reads a year later.
+
+**3. Testing a candidate takes days, and a pending run does not.** GitHub
+expires pending deployments, and a run parked waiting for approval is awkward
+to re-trigger. Decoupling means the candidate can sit on TestPyPI as long as it
+needs to.
+
+### The property separation puts at risk, and how stage 2 keeps it
+
+> **PyPI must receive the exact bytes that TestPyPI was tested with.**
+
+So **stage 2 must never rebuild.** Builds are not reproducible across runner
+images and setuptools versions, and a rebuild would publish an artifact nobody
+smoke-tested — which is precisely the failure mode this pipeline exists to
+prevent, reintroduced by the pipeline itself.
+
+Stage 1 records `SHA256SUMS` beside the dists. Stage 2 downloads that run's
+artifact, re-verifies every digest, and **fails if the artifact is missing or a
+digest differs**. No fallback to building; a missing candidate means re-running
+stage 1, not improvising.
+
+### One decision to take before writing any of it
+
+**Does the candidate burn the real version number on TestPyPI?**
+
+Version collisions are permanent on *both* indexes. Publish `0.6.0` to
+TestPyPI, find a bug, and `0.6.0` can never be published to TestPyPI again.
+
+The tempting escape is to publish `0.6.0.devN` to TestPyPI and `0.6.0` to PyPI
+— but then the two artifacts are **not the same bytes**, and the property above
+is gone. You cannot have both identical artifacts and a re-testable version
+number.
+
+**Take identical artifacts.** A failed candidate means bumping the patch
+version and tagging again, which costs a version number and nothing else. Say
+so in `CONTRIBUTING.md` so it is not rediscovered mid-release.
+
+### Guards
 
 - **Tag/version consistency** — fail if the tag does not match
-  `pyproject.toml`. `tests/test_package.py` already ties the version to
-  `__version__` and the changelog; this closes the last gap.
-- **Publish only on a green matrix for that commit.** Both 0.3.0 and 0.3.1
-  were tagged with a failing 3.9 job. A release workflow that re-runs the
-  matrix makes that structurally impossible.
-- **Smoke-test from TestPyPI before PyPI.** The 3.9 import failure lived in
-  the *published wheel*, and the shap/numpy incompatibility only appeared on
-  a clean install. Neither was visible in the source tree.
+  `pyproject.toml`. Cheap, and the whole release hangs off it.
+- **Publish only on a green matrix for that commit** — query the CI conclusion
+  for the tagged SHA rather than trusting that a tag implies a tested commit.
+  This is the guard that v0.3.0 and v0.3.1 did not have.
+- **Test the installed artifact, not the source tree.** The Python 3.9 import
+  failure lived in the *published wheel*, and the shap/numpy clash only
+  appeared on a clean install. Running the suite against the repo would have
+  missed both.
+- **`skip-existing: true` on TestPyPI, `false` on PyPI.** Re-running a
+  candidate is normal; a duplicate on PyPI is a mistake and should fail loudly.
+- **`--extra-index-url https://pypi.org/simple/` on the smoke test.** TestPyPI
+  does not carry numpy or pandas, so `pip install --index-url` alone cannot
+  resolve this package's dependencies. This trap has cost other projects an
+  afternoon; it costs us one line.
+- **Assert `__version__` from the installed wheel** in the smoke test, then run
+  a real gate end to end and check the verdict — not just that the import
+  succeeded.
 
 ### Manual prerequisites (repo admin, not code)
 
-These cannot be done from a workflow and need doing before the first run:
+- [ ] Register **TestPyPI** trusted publisher: repo, `release-candidate.yml`,
+      environment `testpypi`
+- [ ] Register **PyPI** trusted publisher: repo, `release-promote.yml`,
+      environment `pypi` — a *different* workflow filename, which is the point
+- [ ] Create the `testpypi` environment (no protection)
+- [ ] Create the `pypi` environment with a **required reviewer**
+- [ ] Do the branch and tag ruleset work in
+      [Before the next release](#before-the-next-release--the-repository-itself)
+      first; only an Environment stands between a tag and PyPI, and only a
+      ruleset stands between a bad commit and `main`
 
-- [ ] Register the repository, workflow filename and environment name as a
-      **trusted publisher on PyPI**
-- [ ] The same on **TestPyPI** — a separate registration
-- [ ] Create the `testpypi` and `pypi` **Environments**, with a required
-      reviewer on `pypi`
-- [ ] Enable **branch protection** on `main`: require a PR and a green CI run
-
-Two things to know going in:
-
-- If the workflow **filename** later changes, publishing breaks until the
-  trusted-publisher config is updated to match.
-- **Version collisions are permanent on both indexes.** Neither allows
-  re-uploading a version, and `0.2.0`, `0.2.1`, `0.3.2`, `0.4.0` and `0.4.1`
-  are already taken. A failed release means bumping the patch, not retrying.
-
----
+Two things to know: if either workflow **filename** changes, publishing breaks
+until the trusted-publisher registration is updated; and **version collisions
+are permanent**, per the decision above.
 
 ## Later
 
 - **A public, subclassable `ModelAdapter` (1.0.0).** The extension point is a
   plain callable for now, which covers every case with less ceremony; a named
-  class earns its place once someone needs to attach batching, retries or
-  auth to a serving layer.
-- **Unstructured data support** (text / image / audio).
-  `bdp_model_gate.unstructured` reserves the shape —
-  `UnstructuredGateContext` and a matching check suite — and raises
-  `NotImplementedError` until it lands.
-- **HTML/Markdown report rendering** alongside `to_json()`.
+  class earns its place once someone needs batching, retries or auth on a
+  serving layer.
+- **Unstructured data** (text / image / audio).
+  `bdp_model_gate.unstructured` reserves the shape and raises
+  `NotImplementedError` until it lands. Deliberately *after* the statistical
+  work above: broadening the modality before deepening the statistics would
+  trade a defensible niche for a shallow generalist.

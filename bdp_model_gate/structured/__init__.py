@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 from ..config import GateConfig
+from .actuarial_checks import (
+    ActualVsExpectedCheck,
+    DislocationCheck,
+    MonotonicityCheck,
+    RiskDiscriminationCheck,
+)
+from .calibration_checks import (
+    CalibrationCheck,
+    EqualisedOddsCheck,
+    SubgroupCalibrationCheck,
+)
 from .compliance import ComplianceMappingCheck
 from .fairness import (
     CounterfactualFlipCheck,
@@ -19,6 +30,14 @@ from .security import (
     AdversarialRobustnessCheck,
     PIILeakageCheck,
     PromptInjectionCheck,
+    ReportInjectionCheck,
+)
+from .validation_checks import (
+    FeatureContractCheck,
+    FeatureDriftCheck,
+    LeakageCheck,
+    SplitOverlapCheck,
+    ValidationStrategyCheck,
 )
 
 
@@ -35,19 +54,44 @@ def default_structured_checks(config: GateConfig | None = None, include_plugins:
     """
     config = config or GateConfig()
     checks = [
-        ProxyCorrelationCheck(config.fairness),
-        DisparateImpactCheck(config.fairness),
-        ShapSubgroupCheck(config.fairness),
-        CounterfactualFlipCheck(config.fairness),
-        GroupMeanGapCheck(config.fairness),
-        ErrorParityCheck(config.fairness),
-        CalibrationParityCheck(config.fairness),
-        LossRatioParityCheck(config.fairness),
-        PerformanceThresholdCheck(config.performance),
+        # Validation first. A finding here says the evidence behind every
+        # other number in the report is unsound, which is a strictly prior
+        # question to whether the model is any good.
+        LeakageCheck(config.validation),
+        SplitOverlapCheck(config.validation),
+        ValidationStrategyCheck(config.validation, config.compliance),
+        FeatureContractCheck(config.validation),
+        FeatureDriftCheck(config.validation),
+        ProxyCorrelationCheck(config.fairness, config.uncertainty),
+        DisparateImpactCheck(config.fairness, config.uncertainty),
+        ShapSubgroupCheck(config.fairness, config.uncertainty),
+        CounterfactualFlipCheck(config.fairness, uncertainty=config.uncertainty),
+        # Separation and sufficiency. Reported alongside demographic parity
+        # because the three are mutually incompatible — presenting only one
+        # would make the choice silently.
+        EqualisedOddsCheck(config.fairness, config.uncertainty),
+        SubgroupCalibrationCheck(config.fairness, config.uncertainty),
+        GroupMeanGapCheck(config.fairness, config.uncertainty),
+        ErrorParityCheck(config.fairness, config.uncertainty),
+        CalibrationParityCheck(config.fairness, config.uncertainty),
+        LossRatioParityCheck(config.fairness, config.uncertainty),
+        PerformanceThresholdCheck(config.performance, config.uncertainty),
+        CalibrationCheck(config.performance, config.uncertainty),
+        # The pricing measures. Level, shape and ordering are three
+        # independent ways for a premium model to be wrong, and an error
+        # metric collapses all three into one number that hides each.
+        ActualVsExpectedCheck(config.actuarial),
+        RiskDiscriminationCheck(config.actuarial),
         ComplianceMappingCheck(config.compliance),
+        MonotonicityCheck(config.actuarial),
+        DislocationCheck(config.actuarial),
         AdversarialRobustnessCheck(config.security),
         PIILeakageCheck(config.security),
         PromptInjectionCheck(config.security),
+        # The only check whose victim is not the model under test: this one
+        # asks whether the library is about to copy someone else's
+        # instructions into a report an LLM will read.
+        ReportInjectionCheck(config.security),
     ]
     if include_plugins:
         from ..registry import discover_plugin_checks
@@ -57,7 +101,19 @@ def default_structured_checks(config: GateConfig | None = None, include_plugins:
 
 
 __all__ = [
+    "ActualVsExpectedCheck",
+    "DislocationCheck",
+    "MonotonicityCheck",
+    "RiskDiscriminationCheck",
+    "FeatureContractCheck",
+    "FeatureDriftCheck",
+    "LeakageCheck",
+    "SplitOverlapCheck",
+    "ValidationStrategyCheck",
+    "CalibrationCheck",
     "CalibrationParityCheck",
+    "EqualisedOddsCheck",
+    "SubgroupCalibrationCheck",
     "ErrorParityCheck",
     "GroupMeanGapCheck",
     "LossRatioParityCheck",
@@ -70,5 +126,6 @@ __all__ = [
     "AdversarialRobustnessCheck",
     "PIILeakageCheck",
     "PromptInjectionCheck",
+    "ReportInjectionCheck",
     "default_structured_checks",
 ]

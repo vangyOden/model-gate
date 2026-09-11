@@ -9,55 +9,61 @@ return a list of `CheckResult`.
 from bdp_model_gate import BaseCheck, CheckResult
 
 
-class FeatureDriftCheck(BaseCheck):
-    """Flags validation features whose mean has drifted from training."""
+class ConstantFeatureCheck(BaseCheck):
+    """Flags features that never vary in the validation set.
 
-    name = "feature_drift"
-    category = "performance"  # fairness | performance | compliance | security
-    blocking = False  # drift warrants a look, not a hard stop
+    A column that is constant here contributes nothing to any prediction, and
+    usually means a join went wrong or a default is being filled in upstream.
+    """
+
+    name = "constant_features"
+    category = "validation"  # validation | fairness | performance | compliance | security
+    blocking = False  # worth a look, not a hard stop
     supported_tasks = ("binary", "multiclass", "regression")
 
-    def __init__(self, reference, max_z: float = 3.0):
-        self.reference = reference
-        self.max_z = max_z
+    def __init__(self, max_constant_fraction: float = 0.0):
+        self.max_constant_fraction = max_constant_fraction
 
     def run(self, context):
-        results = []
-        for col in context.X.select_dtypes(include=["number"]).columns:
-            if col not in self.reference:
-                continue
-            sd = self.reference[col].std()
-            if sd == 0:
-                continue
-            z = abs(context.X[col].mean() - self.reference[col].mean()) / sd
-            if z > self.max_z:
-                results.append(
-                    CheckResult(
-                        self.name,
-                        self.category,
-                        "DRIFT_RISK",
-                        detail=f"{col} mean shifted {z:.2f} sd from training",
-                        blocking=self.blocking,
-                        metadata={"feature": col, "z_score": round(float(z), 3)},
-                    )
+        constant = [c for c in context.X.columns if context.X[c].nunique(dropna=False) <= 1]
+        fraction = len(constant) / context.X.shape[1]
+        if fraction <= self.max_constant_fraction:
+            return [
+                CheckResult(
+                    self.name,
+                    self.category,
+                    "OK",
+                    f"all {context.X.shape[1]} features vary",
+                    self.blocking,
                 )
-        return results or [
+            ]
+        return [
             CheckResult(
                 self.name,
                 self.category,
-                "OK",
-                f"no feature drifted beyond {self.max_z} sd",
-                self.blocking,
+                "CONSTANT_FEATURE_RISK",
+                detail=(
+                    f"{feature} takes one value across the whole validation set — "
+                    "it cannot be influencing any prediction"
+                ),
+                blocking=self.blocking,
+                metadata={"feature": feature, "n_constant": len(constant)},
             )
+            for feature in constant
         ]
 ```
+
+Note the shape of the two returns. A check that finds nothing emits an
+explicit `OK` rather than an empty list, so the report records that it ran —
+a check that vanishes when it passes is indistinguishable from one that was
+never registered.
 
 Run it alongside the standard suite:
 
 ```python
 from bdp_model_gate.structured import default_structured_checks
 
-checks = default_structured_checks(config) + [FeatureDriftCheck(X_train)]
+checks = default_structured_checks(config) + [ConstantFeatureCheck()]
 report = ModelGate(checks=checks).run(context)
 ```
 
@@ -71,6 +77,19 @@ deployment at 2am. If not, it is non-blocking.
 every task, so a check written before 0.3.0 keeps working — but if yours only
 makes sense for one, say so and the gate will report `NOT_APPLICABLE`
 elsewhere rather than letting it produce a meaningless number.
+
+### An optional third attribute: `plot`
+
+Override `plot(self, context, results=None, ax=None)` and the report renders a
+chart beneath your check's findings. Discovery is by override alone, so there
+is nothing to register.
+
+Draw only where your check collapses a distribution to a scalar **and the
+shape is what a reader needs to judge** — a scalar that is genuinely a scalar
+should be left alone. Take an optional `Axes` and return it, return `None`
+when there is nothing to draw, and never raise. Full guidance, including why a
+chart must never contradict the number beside it, is in
+[Plots](reference/plots.md).
 
 ### A broken check is contained
 
@@ -107,10 +126,16 @@ from bdp_model_gate.registry import discover_plugin_checks
 print(discover_plugin_checks())
 ```
 
-## Contributing
+## Contributing to the library itself
+
+Everything above is about extending the gate from *your* code. To change the
+library, see
+[`CONTRIBUTING.md`](https://github.com/vanjy-eng/model-gate/blob/main/CONTRIBUTING.md)
+— development setup, the testing standards, and how a check or a plot gets
+reviewed.
 
 ```bash
-pip install -e ".[dev,structured]"
+pip install -e ".[dev,structured,plots,yaml,toml]"
 
 ruff check .        # lint
 ruff format .       # format

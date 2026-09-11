@@ -45,6 +45,7 @@ logger = get_logger("cli")
 #: honoured deprecated key is how a stale threshold survives a rename.
 DEPRECATED_CONFIG_KEYS = {
     ("performance", "min_accuracy"): "min_score",
+    ("security", "jailbreak_prompts"): "extra_injection_prompts",
 }
 
 
@@ -64,6 +65,68 @@ def _split_labels(value: str | None) -> list[str] | None:
     return labels
 
 
+def _call_factory(spec: str, flag: str):
+    """Imports and calls a `"package.module:factory"` spec.
+
+    Shared by every `--*-loader` flag. The import is the caller's, not this
+    library's: a generative side-car needs an SDK and a set of credentials
+    that have no business being a dependency of a governance gate.
+    """
+    if ":" not in spec:
+        raise BDPModelGateError(f"{flag} must be 'package.module:factory', got {spec!r}")
+    module_name, _, attr = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise BDPModelGateError(
+            f"could not import {module_name!r} for {flag} — is it on PYTHONPATH? ({exc})"
+        ) from exc
+    try:
+        factory = getattr(module, attr)
+    except AttributeError as exc:
+        raise BDPModelGateError(f"module {module_name!r} has no attribute {attr!r}") from exc
+    if not callable(factory):
+        raise BDPModelGateError(f"{spec!r} is not callable")
+    return factory()
+
+
+def _load_text_fn(spec: str | None, flag: str):
+    """A `fn(str) -> str` from a loader spec, for the injection surfaces.
+
+    Kept separate from `_load_via_loader` because the contract is different:
+    a model may expose `.predict()`, but a side-car has to be a plain
+    callable taking one string.
+    """
+    if not spec:
+        return None
+    loaded = _call_factory(spec, flag)
+    if not callable(loaded):
+        raise BDPModelGateError(
+            f"{spec!r} returned a {type(loaded).__name__}, but {flag} needs a factory "
+            "returning a callable that takes one string and returns one string"
+        )
+    logger.info("loaded %s via %s", flag, spec)
+    return loaded
+
+
+def _load_canaries(path: str | None) -> list[str] | None:
+    """Canaries from a file, one per line.
+
+    A file rather than a flag on purpose: a canary is usually a sentence from
+    a system prompt, and putting that on a command line puts it in the shell
+    history and the CI log of every run.
+    """
+    if not path:
+        return None
+    lines = [line.strip() for line in Path(path).read_text().splitlines()]
+    canaries = [line for line in lines if line and not line.startswith("#")]
+    if not canaries:
+        raise BDPModelGateError(
+            f"--canaries-file {path!r} contains no canaries — one per line, '#' for a comment"
+        )
+    return canaries
+
+
 def _load_via_loader(spec: str):
     """Imports and calls a `"package.module:factory"` loader.
 
@@ -79,23 +142,7 @@ def _load_via_loader(spec: str):
 
         bdp-model-gate --model-loader "mypkg.serving:load_scorer" ...
     """
-    if ":" not in spec:
-        raise BDPModelGateError(f"--model-loader must be 'package.module:factory', got {spec!r}")
-    module_name, _, attr = spec.partition(":")
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise BDPModelGateError(
-            f"could not import {module_name!r} for --model-loader — is it on PYTHONPATH? ({exc})"
-        ) from exc
-    try:
-        factory = getattr(module, attr)
-    except AttributeError as exc:
-        raise BDPModelGateError(f"module {module_name!r} has no attribute {attr!r}") from exc
-    if not callable(factory):
-        raise BDPModelGateError(f"{spec!r} is not callable")
-
-    loaded = factory()
+    loaded = _call_factory(spec, "--model-loader")
     if not (callable(loaded) or hasattr(loaded, "predict")):
         raise BDPModelGateError(
             f"{spec!r} returned a {type(loaded).__name__}, which is neither callable nor "
@@ -182,6 +229,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--protected", help="Path to a CSV of protected attributes, row-aligned to --data"
     )
+    parser.add_argument(
+        "--train-data",
+        help=(
+            "Path to a CSV of the TRAINING features. Unlocks the validation checks "
+            "that need both frames: rows shared between the two splits, and "
+            "train-serve skew. Only its columns and distributions are read — the "
+            "target column is dropped if present, and no labels are used"
+        ),
+    )
     parser.add_argument("--model-card", help="Path to a JSON model card")
     parser.add_argument(
         "--latencies", help="Path to a text/CSV file of per-request latencies in ms, one per line"
@@ -227,6 +283,53 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Column in --data holding a per-row expected loss or technical premium. "
             "Enables the loss-ratio parity fairness check for regression models."
+        ),
+    )
+    parser.add_argument(
+        "--generate-loader",
+        help=(
+            "A 'package.module:factory' function returning a fn(str) -> str: the "
+            "generative side-car's entry point. This is the DIRECT injection surface — "
+            "the payload arrives as the user turn. Your factory does the SDK import "
+            "and the credential handling, so neither is a dependency of this library"
+        ),
+    )
+    parser.add_argument(
+        "--inject-loader",
+        help=(
+            "A 'package.module:factory' function returning a fn(payload: str) -> str "
+            "that places the payload where your pipeline puts RETRIEVED content — a "
+            "claim description, a customer email, an uploaded document. This is the "
+            "indirect surface, and it is the one that matters for a regulated "
+            "deployment: the realistic attack is untrusted text arriving as data"
+        ),
+    )
+    parser.add_argument(
+        "--canaries-file",
+        help=(
+            "Path to a file of canaries, one per line ('#' for a comment): strings "
+            "that must never appear in generated output — a sentence from the system "
+            "prompt, a planted fake PII record, an internal URL. This is what makes "
+            "the injection check gateable: a canary in a response is a leak and blocks, "
+            "where without one the leak attacks can only be routed to a human"
+        ),
+    )
+    parser.add_argument(
+        "--exposure-col",
+        help=(
+            "Column in --data holding a per-row exposure — earned vehicle-years, "
+            "months on risk, sum-insured-years. Weights the regression metrics and the "
+            "actuarial checks, so a one-month policy stops counting as much as a "
+            "twelve-month one. Supply it when the target is a rate; leave it out when "
+            "the target is a per-policy total"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-col",
+        help=(
+            "Column in --data holding the incumbent model's prediction for the same "
+            "rows. Enables the dislocation check: how much of the book moves by more "
+            "than the tolerance, and which group carries it"
         ),
     )
     parser.add_argument(
@@ -329,19 +432,34 @@ def main(argv=None) -> int:
         y_true = df[args.target_col].values
         drop_cols = [args.target_col]
 
-        expected_loss = None
-        if args.expected_loss_col:
-            if args.expected_loss_col not in df.columns:
-                raise BDPModelGateError(
-                    f"--expected-loss-col {args.expected_loss_col!r} is not a column in {args.data}"
-                )
-            expected_loss = df[args.expected_loss_col].to_numpy()
-            drop_cols.append(args.expected_loss_col)
+        # Every one of these is a column of --data that is *not* a feature, so
+        # each is read out and then dropped: leaving an exposure or a baseline
+        # premium in X would hand the model its own answer at scoring time,
+        # which is the leak `LeakageCheck` exists to find.
+        def _side_column(flag_name: str, column: str | None):
+            if not column:
+                return None
+            if column not in df.columns:
+                raise BDPModelGateError(f"--{flag_name} {column!r} is not a column in {args.data}")
+            drop_cols.append(column)
+            return df[column].to_numpy()
+
+        expected_loss = _side_column("expected-loss-col", args.expected_loss_col)
+        exposure = _side_column("exposure-col", args.exposure_col)
+        baseline_pred = _side_column("baseline-col", args.baseline_col)
 
         X = df.drop(columns=drop_cols)
         y_pred = _predict(model, X, args.task)
 
         protected_df = pd.read_csv(args.protected) if args.protected else None
+
+        X_train = None
+        if args.train_data:
+            X_train = pd.read_csv(args.train_data)
+            # Drop whatever the validation frame dropped, so the two are
+            # compared on features alone. Overlap detection would otherwise
+            # miss a shared row whose label column happened to differ.
+            X_train = X_train.drop(columns=[c for c in drop_cols if c in X_train.columns])
         model_card = json.load(open(args.model_card)) if args.model_card else None
 
         latencies_ms = None
@@ -361,10 +479,16 @@ def main(argv=None) -> int:
             y_true=y_true,
             y_pred=y_pred,
             protected_df=protected_df,
+            X_train=X_train,
             latencies_ms=latencies_ms,
             cost_per_inference=args.cost_per_inference,
             model_card=model_card,
             expected_loss=expected_loss,
+            exposure=exposure,
+            baseline_pred=baseline_pred,
+            generate_fn=_load_text_fn(args.generate_loader, "--generate-loader"),
+            inject_fn=_load_text_fn(args.inject_loader, "--inject-loader"),
+            canaries=_load_canaries(args.canaries_file),
             task=args.task,
             class_order=_split_labels(args.class_order),
             favourable_classes=_split_labels(args.favourable_classes),
